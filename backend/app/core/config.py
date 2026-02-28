@@ -14,11 +14,21 @@ class Settings(BaseSettings):
     FALLBACK_MODEL: str = "gemini-2.5-flash"
     LLM_TEMPERATURE: float = 0.7
 
+    # Database
+    DATABASE_URL: str = ""
+
+    # Redis
+    UPSTASH_REDIS_REST_URL: str = ""
+    UPSTASH_REDIS_REST_TOKEN: str = ""
+
     # interview config
     MAX_QUESTIONS: int = 8
     MAX_FOLLOW_UPS: int = 1
     SCORE_MIN: int = 1
     SCORE_MAX: int = 10
+
+    # Session Config
+    SESSION_TTL_SECONDS: int = 7200
 
     # app
     APP_ENV: str = "development"

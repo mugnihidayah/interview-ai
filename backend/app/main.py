@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.core.database import init_db, close_db
+from app.core.redis import init_redis, close_redis
 
 
 # configure logging
@@ -22,9 +24,13 @@ async def lifespan(app: FastAPI):
 
     # startup
     logger.info("AI Interview Simulator starting up...")
+    await init_db()
+    await init_redis()
     logger.info("Docs available at: /docs")
     yield
     # shutdown
+    await close_db()
+    await close_redis()
     logger.info("AI Interview Simulator Shutting down...")
 
 
@@ -32,7 +38,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI Interview Simulator",
     description="Agentic AI-powered interview simulation with multi-agent architecture",
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
@@ -57,6 +63,6 @@ def health_check():
 
     return {
         "status": "healthy",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
