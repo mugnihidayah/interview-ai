@@ -14,6 +14,7 @@ from app.models.schemas import (
     Difficulty,
     QAPair,
     QuestionEvaluation,
+    Language,
 )
 from app.models.tables import (
     CoachingReportTable,
@@ -37,6 +38,7 @@ async def create_session(
         job_description=state.job_description,
         interview_type=state.interview_type.value,
         difficulty=state.difficulty.value,
+        language=state.language.value,
         candidate_profile=state.candidate_profile.model_dump()
         if state.candidate_profile
         else None,
@@ -243,6 +245,7 @@ def db_to_interview_state(
         job_description=session_row.job_description,
         interview_type=InterviewType(session_row.interview_type),
         difficulty=Difficulty(session_row.difficulty),
+        language=Language(session_row.language),
         candidate_profile=candidate_profile,
         interview_plan=interview_plan,
         current_question_index=current_question_index,

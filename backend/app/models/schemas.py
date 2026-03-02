@@ -38,6 +38,12 @@ class OverallGrade(str, Enum):
     POOR = "Poor"
 
 
+class Language(str, Enum):
+    """Supported interview languages."""
+    ENGLISH = "en"
+    INDONESIAN = "id"
+
+
 # INPUT SCHEMAS
 class InterviewConfig(BaseModel):
     """User input to start an interview session."""
@@ -61,6 +67,10 @@ class InterviewConfig(BaseModel):
     difficulty: Difficulty = Field(
         ...,
         description="Difficulty level of the interview: junior, mid, senior",
+    )
+    language: Language = Field(
+        default=Language.ENGLISH,
+        description="Interview language: en or id",
     )
 
     @field_validator("resume_text", "job_description")
@@ -196,6 +206,7 @@ class InterviewState(BaseModel):
     job_description: str = ""
     interview_type: InterviewType = InterviewType.BEHAVIORAL
     difficulty: Difficulty = Difficulty.JUNIOR
+    language: Language = Language.ENGLISH
 
     # --- Resume Analysis ---
     candidate_profile: Optional[CandidateProfile] = None

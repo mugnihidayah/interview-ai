@@ -30,6 +30,7 @@ class InterviewSessionTable(Base):
     job_description: Mapped[str] = mapped_column(Text, nullable=False)
     interview_type: Mapped[str] = mapped_column(String(20), nullable=False)
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
+    language: Mapped[str] = mapped_column(String(5), nullable=False, default="en")
 
     # analysis results
     candidate_profile: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

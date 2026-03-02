@@ -11,6 +11,8 @@ from app.core.prompts import (
     INTERVIEW_PLANNER_PROMPT,
     INTERVIEWER_QUESTION_PROMPT,
     SECURITY_GUARDRAIL,
+    LANGUAGE_INSTRUCTION,
+    LANGUAGE_NAMES,
 )
 from app.models.schemas import (
     FollowUpDecision,
@@ -67,6 +69,9 @@ def plan_interview(state: InterviewState) -> InterviewState:
     try:
         prompt = INTERVIEW_PLANNER_PROMPT.format(
             security_guardrail=SECURITY_GUARDRAIL,
+            language_instruction=LANGUAGE_INSTRUCTION.format(
+                language_name=LANGUAGE_NAMES.get(state.language.value, "English")
+            ),
             candidate_profile=_format_candidate_profile(state),
             interview_type=state.interview_type.value,
             difficulty=state.difficulty.value,
@@ -130,6 +135,9 @@ def generate_question(state: InterviewState) -> InterviewState:
 
         prompt = INTERVIEWER_QUESTION_PROMPT.format(
             security_guardrail=SECURITY_GUARDRAIL,
+            language_instruction=LANGUAGE_INSTRUCTION.format(
+                language_name=LANGUAGE_NAMES.get(state.language.value, "English")
+            ),
             interview_type=state.interview_type.value,
             difficulty=state.difficulty.value,
             candidate_profile=_format_candidate_profile(state),
@@ -220,6 +228,9 @@ def generate_follow_up(state: InterviewState, answer: str) -> InterviewState:
 
         prompt = FOLLOW_UP_QUESTION_PROMPT.format(
             security_guardrail=SECURITY_GUARDRAIL,
+            language_instruction=LANGUAGE_INSTRUCTION.format(
+                language_name=LANGUAGE_NAMES.get(state.language.value, "English")
+            ),
             question=state.current_question,
             answer=safe_answer,
             reason="The answer needs more depth or specificity.",

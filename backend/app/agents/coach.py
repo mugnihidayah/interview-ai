@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage
 
 from app.core.llm import invoke_llm
 from app.core.utils import sanitize_for_prompt, extract_json
-from app.core.prompts import COACH_PROMPT, SECURITY_GUARDRAIL
+from app.core.prompts import COACH_PROMPT, SECURITY_GUARDRAIL, LANGUAGE_INSTRUCTION, LANGUAGE_NAMES
 from app.models.schemas import FinalReport, InterviewState, QAPair
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,9 @@ def generate_coaching_report(state: InterviewState) -> InterviewState:
         # Build prompt
         prompt = COACH_PROMPT.format(
             security_guardrail=SECURITY_GUARDRAIL,
+            language_instruction=LANGUAGE_INSTRUCTION.format(
+                language_name=LANGUAGE_NAMES.get(state.language.value, "English")
+            ),
             interview_type=state.interview_type.value,
             difficulty=state.difficulty.value,
             candidate_profile=_format_candidate_profile(state),

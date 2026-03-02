@@ -126,6 +126,7 @@ async def start_interview(
         job_description=config.job_description,
         interview_type=config.interview_type,
         difficulty=config.difficulty,
+        language=config.language,
     )
 
     # run setup graph in thread

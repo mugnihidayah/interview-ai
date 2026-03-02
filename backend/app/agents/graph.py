@@ -36,6 +36,7 @@ class GraphState(TypedDict, total=False):
     job_description: str
     interview_type: str
     difficulty: str
+    language: str
     candidate_profile: Optional[dict]
     interview_plan: Optional[dict]
     current_question_index: int
