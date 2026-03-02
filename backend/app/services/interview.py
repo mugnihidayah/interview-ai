@@ -1,59 +1,126 @@
+import asyncio
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import run_process_answer, run_setup
 from app.agents.interviewer import decide_follow_up, generate_follow_up
+from app.core.config import settings
+from app.core.redis import delete_cache, get_cache, set_cache
 from app.models.schemas import InterviewConfig, InterviewState, QAPair
+from app.services import database as db_service
 
 logger = logging.getLogger(__name__)
 
-
-# SESSION MANAGEMENT
-@dataclass
-class InterviewSession:
-    """
-    Tracks an active interview session.
-
-    Wraps InterviewState with service-level tracking
-    for follow-up flow that requires user input mid-process.
-    """
-
-    session_id: str
-    state: InterviewState
-    awaiting_follow_up: bool = False
-    pending_main_question: str = ""
-    pending_main_answer: str = ""
-
-
-# In-memory session store (will replaced by redis)
-_sessions: dict[str, InterviewSession] = {}
+REDIS_KEY_PREFIX = "interview"
 
 
 # HELPERS
+def _redis_key(session_id: str) -> str:
+    """Build redis key for a session"""
+    return f"{REDIS_KEY_PREFIX}: {session_id}"
+
 def _sanitize_text(text: str) -> str:
-    """Basic text sanitization for user input."""
+    """Basic text sanitization for user input"""
     text = text.strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r" {2,}", " ", text)
     return text
 
 
-# SERVICE FUNCTIONS
-def start_interview(config: InterviewConfig) -> InterviewSession:
+# REDIS CACHE OPERATION
+async def _cache_session(
+    session_id: str,
+    state: InterviewState,
+    awaiting_follow_up: bool = False,
+    pending_main_question: str = "",
+    pending_main_answer: str = ""
+) -> None:
+    """Cache active session state in redis"""
+    cache_data = {
+        "state": state.model_dump(mode="json"),
+        "awaiting_follow_up": awaiting_follow_up,
+        "pending_main_question": pending_main_question,
+        "pending_main_answer": pending_main_answer,
+    }
+    await set_cache(
+        _redis_key(session_id),
+        cache_data,
+        ttl=settings.SESSION_TTL_SECONDS,
+    )
+
+
+async def _load_from_cache(session_id: str) -> dict | None:
+    """Load session from redis cache"""
+    return await get_cache(_redis_key(session_id))
+
+
+async def _clear_cache(session_id: str) -> None:
+    """Remove session from redis cache"""
+    await delete_cache(_redis_key(session_id))
+
+
+# SESSION LOADING
+async def _load_session(
+    db: AsyncSession,
+    session_id: str,
+) -> dict:
+    """
+    Load session data. Try redis first, fallback to DB.
+
+    Returns dict with:
+    - state: InterviewState
+    - awaiting_follow_up: bool
+    - pending_main_question: str
+    - pending_main_answer: str
+    """
+
+    # try redis first
+    cached = await _load_from_cache(session_id)
+    if cached:
+        cached["state"] = InterviewState.model_validate(cached["state"])
+        logger.debug("Session %s loaded from redis", session_id[:8])
+        return cached
+    
+    # fallback to DB
+    session_row = await db_service.get_session(db, session_id)
+    if not session_row:
+        raise ValueError("Session not found")
+    
+    state = db_service.db_to_interview_state(session_row)
+
+    session_data = {
+        "state": state,
+        "awaiting_follow_up": False,
+        "pending_main_question": "",
+        "pending_main_answer": "",
+    }
+
+    # re-cache in redis for next access
+    if state.status not in ("completed", "error"):
+        await _cache_session(session_id, state)
+        logger.info("Session %s loaded from DB and re-cached", session_id[:8])
+
+    return session_data
+
+
+# SERVICE FUNCTION
+async def start_interview(
+    db: AsyncSession,
+    config: InterviewConfig,
+) -> dict:
     """
     Start a new interview session.
 
-    Flow: analyze resume -> plan interview -> generate first question
+    Flow: create state → run setup graph → save to DB → cache in Redis
     """
 
     logger.info("Starting new interview session...")
 
-    # generate secure session ID
     session_id = uuid.uuid4().hex
 
-    # create initial state from validated config
     state = InterviewState(
         resume_text=config.resume_text,
         job_description=config.job_description,
@@ -61,12 +128,14 @@ def start_interview(config: InterviewConfig) -> InterviewSession:
         difficulty=config.difficulty,
     )
 
-    # run setup graph
-    state = run_setup(state)
+    # run setup graph in thread
+    state = await asyncio.to_thread(run_setup, state)
 
-    # create and store session
-    session = InterviewSession(session_id=session_id, state=state)
-    _sessions[session_id] = session
+    # save to database
+    await db_service.create_session(db, session_id, state)
+
+    # cache in redis
+    await _cache_session(session_id, state)
 
     logger.info(
         "Interview session created: %s (status: %s)",
@@ -74,10 +143,17 @@ def start_interview(config: InterviewConfig) -> InterviewSession:
         state.status,
     )
 
-    return session
+    return {
+        "session_id": session_id,
+        "state": state,
+    }
 
 
-def submit_answer(session_id: str, answer: str) -> InterviewSession:
+async def submit_answer(
+    db: AsyncSession,
+    session_id: str,
+    answer: str,
+) -> dict:
     """
     Submit an answer to the current question.
 
@@ -86,69 +162,81 @@ def submit_answer(session_id: str, answer: str) -> InterviewSession:
     2. Follow-up answer → record full Q&A → process
     """
 
-    session = get_session(session_id)
-    if not session:
-        raise ValueError("Session not found")
-    
-    state = session.state
+    # load session
+    session_data = await _load_session(db, session_id)
+    state = session_data["state"]
 
-    # guard: interview must be in progress
+    # guards
     if state.status == "completed":
         raise ValueError("Interview already completed")
-    
     if state.status == "error":
         raise ValueError("Interview is in error state")
     
-    # sanitize user input
+    # sanitize input
     clean_answer = _sanitize_text(answer)
     if not clean_answer:
         raise ValueError("Answer cannot be empty")
     
-    # route based on follow-up state
-    if session.awaiting_follow_up:
-        _handle_follow_up_answer(session, clean_answer)
+    # Route based on follow-up state
+    if session_data["awaiting_follow_up"]:
+        return await _handle_follow_up_answer(
+            db, session_id, session_data, clean_answer
+        )
     else:
-        _handle_main_answer(session, clean_answer)
+        return await _handle_main_answer(
+            db, session_id, session_data, clean_answer
+        )
 
-    return session
 
-
-def get_session(session_id: str) -> InterviewSession | None:
-    """Retrieve an interview session by ID"""
-    return _sessions.get(session_id)
+async def get_session_status(
+    db: AsyncSession,
+    session_id: str,
+) -> dict:
+    """Get current session status and info."""
+    return await _load_session(db, session_id)
 
 
 # INTERNAL HANDLERS
-def _handle_main_answer(session: InterviewSession, answer: str) -> None:
-    """
-    Handle answer to a main question.
+async def _handle_main_answer(
+    db: AsyncSession,
+    session_id: str,
+    session_data: dict,
+    answer: str,
+) -> dict:
+    """Handle answer to a main question."""
+    state = session_data["state"]
 
-    Decision flow:
-    1. Ask LLM: does this answer need a follow-up?
-    2a. YES → save answer, generate follow-up, wait for user
-    2b. NO  → record Q&A, run process graph (evaluate + next Q or coaching)
-    """
-
-    state = session.state
-
-    # decide if follow-up needed
-    state = decide_follow_up(state, answer)
+    # Decide if follow-up needed
+    state = await asyncio.to_thread(decide_follow_up, state, answer)
 
     if state.is_follow_up:
-        session.pending_main_question = state.current_question
-        session.pending_main_answer = answer
+        # Save original question before it gets overwritten
+        pending_question = state.current_question
 
-        # generate follow-up question
-        state = generate_follow_up(state, answer)
-        session.state = state
-        session.awaiting_follow_up = True
+        # Generate follow-up question
+        state = await asyncio.to_thread(generate_follow_up, state, answer)
+
+        # Cache with follow-up state
+        await _cache_session(
+            session_id,
+            state,
+            awaiting_follow_up=True,
+            pending_main_question=pending_question,
+            pending_main_answer=answer,
+        )
 
         logger.info(
             "Follow-up generated for Q%d, awaiting answer",
             state.current_question_index + 1,
         )
+
+        return {
+            "state": state,
+            "awaiting_follow_up": True,
+        }
+
     else:
-        # no follow-up: record and process immediately
+        # No follow-up: record Q&A and process
         qa_pair = QAPair(
             question_number=state.current_question_index + 1,
             question=state.current_question,
@@ -156,64 +244,113 @@ def _handle_main_answer(session: InterviewSession, answer: str) -> None:
         )
         state.qa_pairs.append(qa_pair)
 
-        # evaluate + next question or coaching
-        session.state = run_process_answer(state)
+        # Evaluate + next question or coaching
+        state = await asyncio.to_thread(run_process_answer, state)
 
-        # ensure status is correct after graph processing
-        _normalize_status(session)
+        # Normalize status
+        if state.status not in ("completed", "error"):
+            state.status = "interviewing"
+
+        # Save evaluated Q&A to database
+        await db_service.save_qa_pair(db, session_id, state.qa_pairs[-1])
+
+        # Handle completion or continue
+        await _sync_after_processing(db, session_id, state)
 
         logger.info(
             "Answer processed for Q%d, status: %s",
             len(state.qa_pairs),
-            session.state.status
+            state.status,
         )
 
+        return {
+            "state": state,
+            "awaiting_follow_up": False,
+        }
 
-def _handle_follow_up_answer(session: InterviewSession, answer: str) -> None:
-    """
-    Handle answer to a follow-up question.
 
-    Records the full Q&A pair, then runs process graph.
-    """
+async def _handle_follow_up_answer(
+    db: AsyncSession,
+    session_id: str,
+    session_data: dict,
+    answer: str,
+) -> dict:
+    """Handle answer to a follow-up question."""
+    state = session_data["state"]
 
-    state = session.state
-
-    # record complete Q&A pair with follow-up
+    # Record complete Q&A pair
     qa_pair = QAPair(
         question_number=state.current_question_index + 1,
-        question=session.pending_main_question,
-        answer=session.pending_main_answer,
+        question=session_data["pending_main_question"],
+        answer=session_data["pending_main_answer"],
         follow_up_question=state.current_question,
         follow_up_answer=answer,
     )
     state.qa_pairs.append(qa_pair)
 
-    # reset follow-up tracking
-    session.awaiting_follow_up = False
-    session.pending_main_question = ""
-    session.pending_main_answer = ""
+    # Evaluate + next question or coaching
+    state = await asyncio.to_thread(run_process_answer, state)
 
-    # evaluate + next question or coaching
-    session.state = run_process_answer(state)
+    # Normalize status
+    if state.status not in ("completed", "error"):
+        state.status = "interviewing"
 
-    # ensure status is correct after graph processing
-    _normalize_status(session)
+    # Save evaluated Q&A to database
+    await db_service.save_qa_pair(db, session_id, state.qa_pairs[-1])
+
+    # Handle completion or continue
+    await _sync_after_processing(db, session_id, state)
 
     logger.info(
         "Follow-up processed for Q%d, status: %s",
         len(state.qa_pairs),
-        session.state.status,
+        state.status,
     )
 
+    return {
+        "state": state,
+        "awaiting_follow_up": False,
+    }
 
-def _normalize_status(session: InterviewSession) -> None:
+
+# DB + CACHE SYNC
+async def _sync_after_processing(
+    db: AsyncSession,
+    session_id: str,
+    state: InterviewState,
+) -> None:
     """
-    Ensure state status is correct after graph processing.
+    Sync state to DB and cache after answer processing.
 
-    The graph may leave status as 'evaluating' after generating the next question. 
-    Normalize it to 'interviewing'.
+    If completed: save report to DB, clear Redis cache
+    If continuing: update Redis cache, update DB status
     """
+    if state.status == "completed" and state.final_report:
+        # Save coaching report
+        await db_service.save_coaching_report(
+            db, session_id, state.final_report
+        )
+        # Update session with final score
+        await db_service.update_session_final_score(
+            db, session_id, state.final_report
+        )
+        # Clear Redis cache
+        await _clear_cache(session_id)
 
-    state = session.state
-    if state.status not in ("complete", "error"):
-        state.status = "interviewing"
+        logger.info("Session %s completed and saved", session_id[:8])
+
+    elif state.status == "error":
+        # Update DB with error status
+        await db_service.update_session_status(
+            db, session_id, state.status, state.error_message
+        )
+        # Clear Redis cache
+        await _clear_cache(session_id)
+
+        logger.warning("Session %s errored", session_id[:8])
+
+    else:
+        # Update Redis cache for next question
+        await _cache_session(session_id, state)
+        # Update DB status
+        await db_service.update_session_status(db, session_id, state.status)

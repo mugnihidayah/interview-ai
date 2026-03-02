@@ -1,7 +1,7 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -251,3 +251,137 @@ def db_to_interview_state(
         status=session_row.status,
         error_message=session_row.error_message,
     )
+
+
+async def list_sessions(
+    db: AsyncSession,
+    page: int = 1,
+    page_size: int = 10,
+) -> dict:
+    """List all sessions with pagination."""
+    import math
+
+    # Count total
+    count_stmt = select(func.count(InterviewSessionTable.id))
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar_one()
+
+    # Fetch paginated sessions (newest first)
+    offset = (page - 1) * page_size
+    stmt = (
+        select(InterviewSessionTable)
+        .order_by(InterviewSessionTable.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    result = await db.execute(stmt)
+    sessions = result.scalars().all()
+
+    return {
+        "sessions": sessions,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": math.ceil(total / page_size) if total > 0 else 0,
+    }
+
+
+async def get_coaching_report(
+    db: AsyncSession,
+    session_id: str,
+) -> CoachingReportTable | None:
+    """Get coaching report for a session."""
+    stmt = select(CoachingReportTable).where(
+        CoachingReportTable.session_id == session_id
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def delete_session(
+    db: AsyncSession,
+    session_id: str,
+) -> bool:
+    """Delete a session and all related data."""
+    stmt = select(InterviewSessionTable).where(
+        InterviewSessionTable.id == session_id
+    )
+    result = await db.execute(stmt)
+    session_row = result.scalar_one_or_none()
+
+    if not session_row:
+        return False
+
+    await db.delete(session_row)
+    await db.commit()
+
+    logger.info("Session %s deleted", session_id[:8])
+    return True
+
+
+async def cleanup_old_sessions(
+    db: AsyncSession,
+    completed_days: int = 30,
+    error_days: int = 7,
+    abandoned_days: int = 3,
+) -> dict:
+    """
+    Delete old sessions based on retention policy.
+
+    - Completed sessions older than completed_days
+    - Error sessions older than error_days
+    - Abandoned (not completed/error) sessions older than abandoned_days
+    """
+
+    now = datetime.now(timezone.utc)
+    deleted = {"completed": 0, "error": 0, "abandoned": 0}
+
+    # delete old completed sessions
+    completed_cutoff = now - timedelta(days=completed_days)
+    stmt = select(InterviewSessionTable).where(
+        InterviewSessionTable.status == "completed",
+        InterviewSessionTable.completed_at < completed_cutoff,
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    for row in rows:
+        await db.delete(row)
+    deleted["completed"] = len(rows)
+
+    # delete old error sessions
+    error_cutoff = now - timedelta(days=error_days)
+    stmt = select(InterviewSessionTable).where(
+        InterviewSessionTable.status == "error",
+        InterviewSessionTable.created_at < error_cutoff,
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    for row in rows:
+        await db.delete(row)
+    deleted["error"] = len(rows)
+
+    # Delete abandoned sessions (not completed, not error)
+    abandoned_cutoff = now - timedelta(days=abandoned_days)
+    stmt = select(InterviewSessionTable).where(
+        InterviewSessionTable.status.notin_(["completed", "error"]),
+        InterviewSessionTable.created_at < abandoned_cutoff,
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    for row in rows:
+        await db.delete(row)
+    deleted["abandoned"] = len(rows)
+
+    await db.commit()
+
+    total = sum(deleted.values())
+    if total > 0:
+        logger.info(
+            "Cleanup: deleted %d sessions (completed: %d, error: %d, abandoned: %d)",
+            total,
+            deleted["completed"],
+            deleted["error"],
+            deleted["abandoned"],
+        )
+
+    return deleted

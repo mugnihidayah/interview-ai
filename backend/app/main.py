@@ -1,11 +1,12 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes import router
-from app.core.database import init_db, close_db
+from app.core.database import init_db, close_db, get_db
 from app.core.redis import init_redis, close_redis
 
 
@@ -66,3 +67,37 @@ def health_check():
         "version": "0.2.0",
     }
 
+
+@app.delete("/system/cleanup", tags=["System"])
+async def cleanup_sessions_endpoint(
+    older_than_days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Delete old sessions based on retention policy.
+
+    - Completed sessions older than {older_than_days} days
+    - Error sessions older than 7 days
+    - Abandoned sessions older than 3 days
+    """
+    try:
+        from app.services.database import cleanup_old_sessions
+
+        result = await cleanup_old_sessions(
+            db,
+            completed_days=older_than_days,
+        )
+
+        total = sum(result.values())
+        return {
+            "message": f"Cleaned up {total} sessions",
+            "details": result,
+        }
+
+    except Exception as e:
+        logger.error("Cleanup failed: %s", type(e).__name__)
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500,
+            detail="Cleanup failed. Please try again.",
+        )

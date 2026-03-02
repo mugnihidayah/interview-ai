@@ -99,15 +99,23 @@ You are conducting a {difficulty}-level interview for the following role.
 
 ## Instructions:
 - Ask exactly ONE question about the current topic
+- Keep the question FOCUSED on a single aspect — do NOT combine multiple sub-topics into one question
+- The question should be answerable in 2-3 minutes of speaking
 - For BEHAVIORAL: use "Tell me about a time..." or "Describe a situation where..." format
 - For TECHNICAL: ask about concepts, architecture, problem-solving, or coding scenarios
 - Adjust complexity to {difficulty} level:
-    - junior: foundational concepts, basic scenarios
-    - mid: applied knowledge, moderate complexity
+    - junior: foundational concepts, basic scenarios, straightforward questions
+    - mid: applied knowledge, moderate complexity, real-world scenarios
     - senior: system design, trade-offs, leadership + technical depth
 - If there is previous Q&A history, make sure your question is NOT repetitive
 - Be conversational but professional
 - Ask in the SAME LANGUAGE as the resume/job description
+
+BAD example (too compound):
+"Design a system that handles X, including how you would implement Y, configure Z, manage W, and ensure V while considering trade-offs of A, B, and C."
+
+GOOD example (focused):
+"How would you design the caching layer for a high-traffic read-heavy API? Walk me through your approach."
 
 Respond with ONLY the interview question. No extra text, no numbering, no prefix.
 """
