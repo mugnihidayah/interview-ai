@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -14,7 +15,39 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     """Base class for all database models."""
+
     pass
+
+
+class UserTable(Base):
+    """Stores user accounts."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    email: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, index=True
+    )
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    # relationships
+    sessions: Mapped[list["InterviewSessionTable"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self) -> str:
+        return f"<User {self.email}>"
 
 
 class InterviewSessionTable(Base):
@@ -24,6 +57,14 @@ class InterviewSessionTable(Base):
 
     # primary key
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    # user ownership (nullable for backward compat with old sessions)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
     # input data
     resume_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -50,7 +91,7 @@ class InterviewSessionTable(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
-        nullable=False
+        nullable=False,
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -63,9 +104,10 @@ class InterviewSessionTable(Base):
         order_by="QAPairTable.question_number",
     )
     coaching_report: Mapped["CoachingReportTable | None"] = relationship(
-        back_populates="session",
-        cascade="all, delete-orphan",
-        uselist=False
+        back_populates="session", cascade="all, delete-orphan", uselist=False
+    )
+    user: Mapped["UserTable | None"] = relationship(
+        back_populates="sessions",
     )
 
     def __repr__(self) -> str:
@@ -109,9 +151,7 @@ class QAPairTable(Base):
     )
 
     # relationship
-    session: Mapped["InterviewSessionTable"] = relationship(
-        back_populates="qa_pairs"
-    )
+    session: Mapped["InterviewSessionTable"] = relationship(back_populates="qa_pairs")
 
     def __repr__(self) -> str:
         return f"<QA #{self.question_number} | Score: {self.score}>"

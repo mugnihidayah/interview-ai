@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Session Config
     SESSION_TTL_SECONDS: int = 7200
 
+    # Auth
+    JWT_SECRET: str = "change-me-in-production"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
     # app
     APP_ENV: str = "development"
 
@@ -37,5 +41,6 @@ class Settings(BaseSettings):
         env_file=find_dotenv(),
         env_file_encoding="utf-8",
     )
+
 
 settings = Settings()

@@ -30,10 +30,12 @@ async def create_session(
     db: AsyncSession,
     session_id: str,
     state: InterviewState,
+    user_id: str | None = None,
 ) -> InterviewSessionTable:
     """Create a new interview session in database."""
     session_row = InterviewSessionTable(
         id=session_id,
+        user_id=user_id,
         resume_text=state.resume_text,
         job_description=state.job_description,
         interview_type=state.interview_type.value,
@@ -72,6 +74,38 @@ async def get_session(
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def verify_session_ownership(
+    db: AsyncSession,
+    session_id: str,
+    user_id: str,
+) -> InterviewSessionTable:
+    """
+    Verify that a session exists AND belongs to the given user.
+
+    Raises:
+        ValueError: if session not found
+        PermissionError: if session belongs to another user or has no owner
+    """
+    stmt = select(InterviewSessionTable).where(
+        InterviewSessionTable.id == session_id
+    )
+    result = await db.execute(stmt)
+    session_row = result.scalar_one_or_none()
+
+    if not session_row:
+        raise ValueError("Session not found")
+
+    # Session tanpa owner (legacy) → tolak semua user
+    if session_row.user_id is None:
+        raise PermissionError("Session has no owner — access denied")
+
+    # Session milik user lain → tolak
+    if session_row.user_id != user_id:
+        raise PermissionError("Not authorized to access this session")
+
+    return session_row
 
 
 async def update_session_status(
@@ -260,19 +294,28 @@ async def list_sessions(
     db: AsyncSession,
     page: int = 1,
     page_size: int = 10,
+    user_id: str | None = None,
 ) -> dict:
-    """List all sessions with pagination."""
+    """List sessions with pagination, filtered by user_id."""
     import math
+
+    # Base filter
+    base_filter = InterviewSessionTable.user_id == user_id if user_id else None
 
     # Count total
     count_stmt = select(func.count(InterviewSessionTable.id))
+    if base_filter is not None:
+        count_stmt = count_stmt.where(base_filter)
     count_result = await db.execute(count_stmt)
     total = count_result.scalar_one()
 
     # Fetch paginated sessions (newest first)
     offset = (page - 1) * page_size
+    stmt = select(InterviewSessionTable)
+    if base_filter is not None:
+        stmt = stmt.where(base_filter)
     stmt = (
-        select(InterviewSessionTable)
+        stmt
         .order_by(InterviewSessionTable.created_at.desc())
         .offset(offset)
         .limit(page_size)
@@ -304,8 +347,9 @@ async def get_coaching_report(
 async def delete_session(
     db: AsyncSession,
     session_id: str,
+    user_id: str | None = None,
 ) -> bool:
-    """Delete a session and all related data."""
+    """Delete a session and all related data. Optionally verify ownership."""
     stmt = select(InterviewSessionTable).where(
         InterviewSessionTable.id == session_id
     )
@@ -315,10 +359,14 @@ async def delete_session(
     if not session_row:
         return False
 
+    # verify ownership if user_id provided
+    if user_id and session_row.user_id is not None and session_row.user_id != user_id:
+        raise PermissionError("Not authorized to delete this session")
+
     await db.delete(session_row)
     await db.commit()
 
-    logger.info("Session %s deleted", session_id[:8])
+    logger.info("Session %s deleted by user %s", session_id[:8], user_id or "system")
     return True
 
 

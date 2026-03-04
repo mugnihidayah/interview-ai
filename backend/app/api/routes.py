@@ -1,16 +1,29 @@
 import logging
 from typing import Optional
+import json
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.schemas import InterviewConfig
+from app.models.tables import UserTable
 from app.services import interview as interview_service
-from app.services.database import get_coaching_report, get_session, delete_session
+from app.services.database import (
+    get_coaching_report,
+    delete_session,
+    verify_session_ownership,
+)
 from app.core.redis import delete_cache
+from app.core.rate_limiter import (
+    interview_start_limiter,
+    answer_limiter,
+    read_limiter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +139,7 @@ class CoachingReportResponse(BaseModel):
 async def start_interview_endpoint(
     config: InterviewConfig,
     db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
 ):
     """
     Start a new interview session.
@@ -134,7 +148,11 @@ async def start_interview_endpoint(
     Returns the first interview question.
     """
     try:
-        result = await interview_service.start_interview(db, config)
+        interview_start_limiter.check(f"user:{current_user.id}")
+        
+        result = await interview_service.start_interview(
+            db, config, user_id=current_user.id
+        )
         state = result["state"]
 
         candidate_name = "Unknown"
@@ -165,6 +183,7 @@ async def start_interview_endpoint(
 async def submit_answer_endpoint(
     request: SubmitAnswerRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
 ):
     """
     Submit an answer to the current question.
@@ -174,6 +193,11 @@ async def submit_answer_endpoint(
     Otherwise, returns the next question.
     """
     try:
+        answer_limiter.check(f"user:{current_user.id}")
+
+        # Ownership check
+        await verify_session_ownership(db, request.session_id, current_user.id)
+
         result = await interview_service.submit_answer(
             db, request.session_id, request.answer
         )
@@ -182,11 +206,7 @@ async def submit_answer_endpoint(
 
         # Build evaluation detail
         last_eval = None
-        if (
-            not awaiting_follow_up
-            and state.qa_pairs
-            and state.qa_pairs[-1].evaluation
-        ):
+        if not awaiting_follow_up and state.qa_pairs and state.qa_pairs[-1].evaluation:
             eval_data = state.qa_pairs[-1].evaluation
             last_eval = EvaluationDetail(
                 score=eval_data.score,
@@ -211,9 +231,7 @@ async def submit_answer_endpoint(
             current_q = state.current_question
 
         # Determine display status
-        display_status = (
-            "awaiting_follow_up" if awaiting_follow_up else state.status
-        )
+        display_status = "awaiting_follow_up" if awaiting_follow_up else state.status
 
         return SubmitAnswerResponse(
             session_id=request.session_id,
@@ -226,6 +244,9 @@ async def submit_answer_endpoint(
             final_report=final_report,
             error_message=state.error_message,
         )
+
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this session")
 
     except ValueError as e:
         error_msg = str(e)
@@ -241,16 +262,72 @@ async def submit_answer_endpoint(
         )
 
 
+@router.post("/answer/stream")
+async def submit_answer_stream_endpoint(
+    request: SubmitAnswerRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
+):
+    """
+    Submit an answer with Server-Sent Events streaming.
+
+    Streams real-time phase updates to the client:
+        processing → evaluating → evaluated → generating_question/report → result
+
+    SSE format: each event is `data: {json}\n\n`
+    Final event is `data: [DONE]\n\n`
+
+    Falls back to POST /answer for non-streaming clients.
+    """
+    # Pre-flight: rate limit + ownership (regular HTTP errors)
+    answer_limiter.check(f"user:{current_user.id}")
+    try:
+        await verify_session_ownership(db, request.session_id, current_user.id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="Not authorized to access this session"
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    async def event_generator():
+        try:
+            async for event in interview_service.submit_answer_stream(
+                db, request.session_id, request.answer
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            logger.error("SSE stream error: %s", type(e).__name__)
+            error_event = {"phase": "error", "message": "An unexpected error occurred"}
+            yield f"data: {json.dumps(error_event)}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/session/{session_id}", response_model=SessionStatusResponse)
 async def get_session_endpoint(
     session_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
 ):
     """Get current session status and information."""
     try:
-        session_data = await interview_service.get_session_status(
-            db, session_id
-        )
+        read_limiter.check(f"user:{current_user.id}")
+
+        # Ownership check
+        await verify_session_ownership(db, session_id, current_user.id)
+
+        session_data = await interview_service.get_session_status(db, session_id)
         state = session_data["state"]
         awaiting_follow_up = session_data.get("awaiting_follow_up", False)
 
@@ -260,9 +337,7 @@ async def get_session_endpoint(
             current_q = state.current_question
 
         # Determine display status
-        display_status = (
-            "awaiting_follow_up" if awaiting_follow_up else state.status
-        )
+        display_status = "awaiting_follow_up" if awaiting_follow_up else state.status
 
         # Extract candidate name
         candidate_name = None
@@ -292,6 +367,9 @@ async def get_session_endpoint(
             error_message=state.error_message,
         )
 
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this session")
+
     except ValueError:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -308,6 +386,7 @@ async def list_sessions_endpoint(
     page: int = 1,
     page_size: int = 10,
     db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
 ):
     """
     List all interview sessions with pagination.
@@ -315,13 +394,15 @@ async def list_sessions_endpoint(
     Returns session summaries ordered by newest first.
     """
     try:
+        read_limiter.check(f"user:{current_user.id}")
+
         # Validate pagination params
         page = max(1, page)
         page_size = max(1, min(50, page_size))
 
         from app.services.database import list_sessions
 
-        result = await list_sessions(db, page, page_size)
+        result = await list_sessions(db, page, page_size, user_id=current_user.id)
 
         sessions = []
         for row in result["sessions"]:
@@ -340,7 +421,9 @@ async def list_sessions_endpoint(
                     overall_grade=row.overall_grade,
                     candidate_name=candidate_name,
                     created_at=row.created_at.isoformat(),
-                    completed_at=row.completed_at.isoformat() if row.completed_at else None,
+                    completed_at=row.completed_at.isoformat()
+                    if row.completed_at
+                    else None,
                 )
             )
 
@@ -364,6 +447,7 @@ async def list_sessions_endpoint(
 async def get_report_endpoint(
     session_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
 ):
     """
     Get the coaching report for a completed session.
@@ -371,10 +455,10 @@ async def get_report_endpoint(
     Returns the full coaching report with scores, feedback, and recommendations.
     """
     try:
-        # Check session exists
-        session_row = await get_session(db, session_id)
-        if not session_row:
-            raise HTTPException(status_code=404, detail="Session not found")
+        read_limiter.check(f"user:{current_user.id}")
+
+        # Ownership check (also returns the session row)
+        session_row = await verify_session_ownership(db, session_id, current_user.id)
 
         # Check session is completed
         if session_row.status != "completed":
@@ -395,8 +479,11 @@ async def get_report_endpoint(
             report=report_data,
         )
 
-    except HTTPException:
-        raise
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this session")
+
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     except Exception as e:
         logger.error("Failed to get report: %s", type(e).__name__)
@@ -410,6 +497,7 @@ async def get_report_endpoint(
 async def delete_session_endpoint(
     session_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
 ):
     """
     Delete an interview session and all related data.
@@ -417,8 +505,13 @@ async def delete_session_endpoint(
     Removes session, Q&A pairs, and coaching report permanently.
     """
     try:
-        # Delete from database
-        deleted = await delete_session(db, session_id)
+        read_limiter.check(f"user:{current_user.id}")
+
+        # Ownership check
+        await verify_session_ownership(db, session_id, current_user.id)
+
+        # Delete from database (with user_id for defense-in-depth)
+        deleted = await delete_session(db, session_id, user_id=current_user.id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Session not found")
 
@@ -429,6 +522,9 @@ async def delete_session_endpoint(
             "message": "Session deleted successfully",
             "session_id": session_id,
         }
+
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this session")
 
     except HTTPException:
         raise
