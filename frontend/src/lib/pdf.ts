@@ -8,10 +8,6 @@ if (typeof window !== "undefined") {
   ).toString();
 }
 
-/**
- * Extract text content from a PDF file client-side.
- * The PDF is NOT uploaded to the server - only the extracted text is sent.
- */
 export async function extractTextFromPDF(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const uint8Array = new Uint8Array(arrayBuffer);
@@ -46,9 +42,6 @@ export async function extractTextFromPDF(file: File): Promise<string> {
   return fullText;
 }
 
-/**
- * Validate file before processing
- */
 export function validatePDFFile(file: File): string | null {
   if (file.type !== "application/pdf") {
     return "Please upload a PDF file.";

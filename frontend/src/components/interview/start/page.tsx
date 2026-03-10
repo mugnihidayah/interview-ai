@@ -21,6 +21,8 @@ import {
   GraduationCap,
   Languages,
   Loader2,
+  Mic,
+  Keyboard,
   RotateCcw,
   Sparkles,
   Users,
@@ -37,6 +39,7 @@ import { cn } from "@/lib/utils";
 type InterviewType = "behavioral" | "technical";
 type Difficulty = "junior" | "mid" | "senior";
 type Language = "en" | "id";
+type VoiceMode = "on" | "off";
 type SetupStep = 1 | 2 | 3;
 
 interface SetupDraft {
@@ -45,6 +48,7 @@ interface SetupDraft {
   interviewType: InterviewType;
   difficulty: Difficulty;
   language: Language;
+  voiceMode: VoiceMode;
   currentStep: SetupStep;
 }
 
@@ -111,6 +115,23 @@ const languages: OptionItem<Language>[] = [
   },
 ];
 
+const voiceModes: OptionItem<VoiceMode>[] = [
+  {
+    value: "on",
+    label: "Voice Mode",
+    icon: Mic,
+    description:
+      "AI reads questions aloud. Answer by speaking or typing. Transcript is editable before submit.",
+  },
+  {
+    value: "off",
+    label: "Type Only",
+    icon: Keyboard,
+    description:
+      "Standard text-based interview. Type your answers manually.",
+  },
+];
+
 const steps: Array<{ id: SetupStep; title: string; detail: string }> = [
   { id: 1, title: "Documents", detail: "Resume and role target" },
   { id: 2, title: "Configuration", detail: "Interview preferences" },
@@ -120,6 +141,7 @@ const steps: Array<{ id: SetupStep; title: string; detail: string }> = [
 const validInterviewTypes = new Set<InterviewType>(["behavioral", "technical"]);
 const validDifficulties = new Set<Difficulty>(["junior", "mid", "senior"]);
 const validLanguages = new Set<Language>(["en", "id"]);
+const validVoiceModes = new Set<VoiceMode>(["on", "off"]);
 
 function parseStep(value: unknown): SetupStep {
   return value === 2 || value === 3 ? value : 1;
@@ -135,6 +157,10 @@ function difficultyLabel(value: Difficulty): string {
 
 function languageLabel(value: Language): string {
   return languages.find((item) => item.value === value)?.label ?? value;
+}
+
+function voiceModeLabel(value: VoiceMode): string {
+  return voiceModes.find((item) => item.value === value)?.label ?? value;
 }
 
 function summarizeTextLength(text: string): string {
@@ -153,12 +179,23 @@ export default function InterviewStartPage() {
   const [interviewType, setInterviewType] = useState<InterviewType>("behavioral");
   const [difficulty, setDifficulty] = useState<Difficulty>("mid");
   const [language, setLanguage] = useState<Language>("en");
+  const [voiceMode, setVoiceMode] = useState<VoiceMode>("off");
   const [currentStep, setCurrentStep] = useState<SetupStep>(1);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draftReady, setDraftReady] = useState(false);
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+
+  // Check if voice is supported
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setVoiceSupported(
+        !!navigator.mediaDevices?.getUserMedia && !!window.MediaRecorder
+      );
+    }
+  }, []);
 
   const resumeLength = resumeText.trim().length;
   const jobDescriptionLength = jobDescription.trim().length;
@@ -192,6 +229,9 @@ export default function InterviewStartPage() {
       if (validLanguages.has(parsed.language as Language)) {
         setLanguage(parsed.language as Language);
       }
+      if (validVoiceModes.has(parsed.voiceMode as VoiceMode)) {
+        setVoiceMode(parsed.voiceMode as VoiceMode);
+      }
 
       setCurrentStep(parseStep(parsed.currentStep));
     } catch {
@@ -211,6 +251,7 @@ export default function InterviewStartPage() {
         interviewType,
         difficulty,
         language,
+        voiceMode,
         currentStep,
       };
 
@@ -231,6 +272,7 @@ export default function InterviewStartPage() {
     interviewType,
     jobDescription,
     language,
+    voiceMode,
     resumeText,
   ]);
 
@@ -275,6 +317,7 @@ export default function InterviewStartPage() {
     setInterviewType("behavioral");
     setDifficulty("mid");
     setLanguage("en");
+    setVoiceMode("off");
     setCurrentStep(1);
     setError(null);
     setDraftSavedAt(null);
@@ -308,7 +351,9 @@ export default function InterviewStartPage() {
         window.localStorage.removeItem(DRAFT_KEY);
       }
 
-      router.push(`/interview/${response.session_id}`);
+      // Pass voice mode via URL param
+      const voiceParam = voiceMode === "on" ? "?voice=1" : "";
+      router.push(`/interview/${response.session_id}${voiceParam}`);
     } catch (err) {
       setLoading(false);
       setError(getErrorMessage(err));
@@ -403,6 +448,7 @@ export default function InterviewStartPage() {
               </motion.div>
             )}
 
+            {/* Documents */}
             {currentStep === 1 && (
               <div className="space-y-7">
                 <section className="space-y-3">
@@ -469,6 +515,7 @@ export default function InterviewStartPage() {
               </div>
             )}
 
+            {/* Configuration */}
             {currentStep === 2 && (
               <div className="space-y-7">
                 <SelectionSection
@@ -497,9 +544,22 @@ export default function InterviewStartPage() {
                   onChange={setLanguage}
                   columns="sm:grid-cols-2"
                 />
+
+                {/* Voice Mode — only show if browser supports it */}
+                {voiceSupported && (
+                  <SelectionSection
+                    title="Input Mode"
+                    options={voiceModes}
+                    value={voiceMode}
+                    disabled={loading}
+                    onChange={setVoiceMode}
+                    columns="sm:grid-cols-2"
+                  />
+                )}
               </div>
             )}
 
+            {/* Review */}
             {currentStep === 3 && (
               <div className="space-y-5">
                 <div className="rounded-xl border border-primary/25 bg-primary/10 p-4 text-sm">
@@ -539,9 +599,13 @@ export default function InterviewStartPage() {
                     detail="Question and feedback output"
                   />
                   <SummaryCard
-                    label="Estimated Time"
-                    value="15-25 minutes"
-                    detail="Based on 8 adaptive questions"
+                    label="Input Mode"
+                    value={voiceModeLabel(voiceMode)}
+                    detail={
+                      voiceMode === "on"
+                        ? "AI reads aloud + voice input"
+                        : "Text input only"
+                    }
                   />
                 </div>
               </div>

@@ -46,7 +46,13 @@ export function useSSEAnswer() {
   }, []);
 
   const submitStream = useCallback(
-    async (sessionId: string, answer: string) => {
+    async (
+      sessionId: string,
+      answer: string,
+      options: {
+        prefetchTTS?: boolean;
+      } = {}
+    ) => {
       // Abort previous stream if any
       abortRef.current?.abort();
       abortRef.current = new AbortController();
@@ -76,7 +82,11 @@ export function useSSEAnswer() {
             method: "POST",
             headers,
             credentials: "include",
-            body: JSON.stringify({ session_id: sessionId, answer }),
+            body: JSON.stringify({
+              session_id: sessionId,
+              answer,
+              prefetch_tts: options.prefetchTTS ?? false,
+            }),
             signal: abortRef.current.signal,
           }
         );

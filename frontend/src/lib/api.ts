@@ -65,6 +65,24 @@ export interface AuthResponse {
   user: User;
 }
 
+// Profile Types
+export interface UpdateProfileRequest {
+  full_name: string;
+}
+
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export interface UserStats {
+  total_sessions: number;
+  completed_sessions: number;
+  average_score: number | null;
+  best_score: number | null;
+  member_since: string | null;
+}
+
 // Interview Types
 export interface StartInterviewRequest {
   resume_text: string;
@@ -89,6 +107,7 @@ export interface StartInterviewResponse {
 export interface SubmitAnswerRequest {
   session_id: string;
   answer: string;
+  prefetch_tts?: boolean;
 }
 
 export interface Evaluation {
@@ -127,6 +146,7 @@ export interface SubmitAnswerResponse {
   total_questions: number;
   last_evaluation: Evaluation | null;
   final_report: FinalReport | null;
+  tts_cache_key?: string | null;
   error_message?: string | null;
 }
 
@@ -136,6 +156,7 @@ export interface SessionResponse {
   candidate_name: string | null;
   interview_type: string | null;
   difficulty: string | null;
+  language: string | null;
   current_question: string | null;
   question_number: number;
   is_follow_up: boolean;
@@ -143,6 +164,7 @@ export interface SessionResponse {
   questions_answered: number;
   overall_score: number | null;
   overall_grade: string | null;
+  tts_cache_key?: string | null;
   error_message?: string | null;
 }
 
@@ -207,6 +229,83 @@ export const authAPI = {
   },
 };
 
+// Profile API
+export const profileAPI = {
+  updateProfile: async (payload: UpdateProfileRequest) => {
+    const { data } = await api.put<User>("/auth/profile", payload);
+    return data;
+  },
+
+  changePassword: async (payload: ChangePasswordRequest) => {
+    const { data } = await api.put<{ message: string }>(
+      "/auth/password",
+      payload
+    );
+    return data;
+  },
+
+  getStats: async () => {
+    const { data } = await api.get<UserStats>("/auth/stats");
+    return data;
+  },
+};
+
+// Voice API
+export const voiceAPI = {
+  tts: async (
+    text: string,
+    language: string = "en",
+    options: {
+      cacheKey?: string;
+    } = {}
+  ): Promise<Blob> => {
+    if (options.cacheKey) {
+      try {
+        const response = await api.get(
+          `/api/interview/voice/tts/prefetch/${encodeURIComponent(options.cacheKey)}`,
+          { responseType: "blob" }
+        );
+        return response.data;
+      } catch {
+        // Fall back to on-demand TTS if prefetched audio is unavailable.
+      }
+    }
+
+    const response = await api.post(
+      "/api/interview/voice/tts",
+      { text, language },
+      { responseType: "blob" }
+    );
+    return response.data;
+  },
+
+  transcribe: async (
+    audioBlob: Blob,
+    language: string = "en",
+    options: {
+      filename?: string;
+      sessionId?: string;
+    } = {}
+  ): Promise<{ text: string; status: string }> => {
+    const formData = new FormData();
+    formData.append("file", audioBlob, options.filename || "recording.webm");
+    formData.append("language", language);
+    if (options.sessionId) {
+      formData.append("session_id", options.sessionId);
+    }
+
+    const { data } = await api.post(
+      "/api/interview/voice/transcribe",
+      formData,
+      {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 30000,
+      }
+    );
+    return data;
+  },
+};
+
 // Interview API
 export const interviewAPI = {
   start: async (payload: StartInterviewRequest) => {
@@ -225,9 +324,19 @@ export const interviewAPI = {
     return data;
   },
 
-  getSession: async (sessionId: string) => {
+  getSession: async (
+    sessionId: string,
+    options: {
+      prefetchTTS?: boolean;
+    } = {}
+  ) => {
+    const params = new URLSearchParams();
+    if (options.prefetchTTS) {
+      params.set("prefetch_tts", "true");
+    }
+
     const { data } = await api.get<SessionResponse>(
-      `/api/interview/session/${sessionId}`
+      `/api/interview/session/${sessionId}${params.size ? `?${params.toString()}` : ""}`
     );
     return data;
   },

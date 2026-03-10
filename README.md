@@ -32,6 +32,14 @@
 - Bilingual support: English and Bahasa Indonesia.
 - Auto-fallback LLM: Groq (primary) -> Gemini (fallback) with retry logic.
 
+### Voice Mode
+- Voice interview mode with browser microphone input and AI voice playback.
+- Speech-to-text powered by Groq Whisper (`whisper-large-v3`).
+- Session-aware STT prompting: Whisper receives live interview context, technical glossary hints, and prompt-echo protection.
+- Browser audio is normalized to WAV when possible before upload to improve transcription stability.
+- Text-to-speech powered by `edge-tts` with English and Bahasa Indonesia voices.
+- TTS warm-cache prefetch for the first question, follow-up questions, and streamed next questions to reduce playback delay after text appears.
+
 ---
 
 ## Quick Start
@@ -66,14 +74,16 @@ UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_rest_token
 JWT_SECRET=your_jwt_secret_key
 
 # Optional (defaults shown)
-PRIMARY_MODEL=openai/gpt-oss-120b
+PRIMARY_MODEL=llama-3.3-70b-versatile
 FALLBACK_MODEL=gemini-2.5-flash
 LLM_TEMPERATURE=0.7
 MAX_QUESTIONS=8
 MAX_FOLLOW_UPS=1
 SESSION_TTL_SECONDS=7200
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
-APP_ENV=development
+TTS_VOICE_EN=en-US-AriaNeural
+TTS_VOICE_ID=id-ID-GadisNeural
+WHISPER_MODEL=whisper-large-v3
 ```
 
 ```bash
@@ -122,6 +132,14 @@ npm run dev
 | `GET` | `/api/interview/session/{id}` | Get session status |
 | `GET` | `/api/interview/{id}/report` | Get coaching report |
 | `DELETE` | `/api/interview/session/{id}` | Delete a session |
+
+### Voice
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/interview/voice/tts` | Generate on-demand TTS audio |
+| `GET` | `/api/interview/voice/tts/prefetch/{cache_key}` | Fetch prefetched TTS audio from warm cache |
+| `POST` | `/api/interview/voice/transcribe` | Transcribe recorded audio with Whisper |
 
 ### System
 
@@ -172,7 +190,8 @@ curl -X POST localhost:8000/api/interview/answer/stream \
   -H "Cookie: access_token=your_token" \
   -d '{
     "session_id": "your_session_id",
-    "answer": "Your answer here..."
+    "answer": "Your answer here...",
+    "prefetch_tts": true
   }' --no-buffer
 # → streams SSE events:
 #   data: {"phase": "processing", "message": "Processing your answer..."}
@@ -181,6 +200,12 @@ curl -X POST localhost:8000/api/interview/answer/stream \
 #   data: {"phase": "generating_question", "message": "Preparing next question..."}
 #   data: {"phase": "result", "data": {...}}
 #   data: [DONE]
+```
+
+For voice-first playback on initial load, the frontend can request:
+
+```bash
+GET /api/interview/session/{id}?prefetch_tts=true
 ```
 
 ### Response Statuses
@@ -284,6 +309,23 @@ Request → Groq (primary, fast)
                                   └── Failed → raise error
 ```
 
+### Voice Pipeline
+
+```
+Browser microphone
+    -> MediaRecorder
+    -> optional client-side WAV normalization
+    -> POST /api/interview/voice/transcribe
+    -> Groq Whisper + session-aware glossary/prompt
+    -> transcript inserted into interview composer
+
+AI question generated
+    -> backend prefetches edge-tts audio
+    -> SSE / session response includes tts_cache_key
+    -> frontend fetches /api/interview/voice/tts/prefetch/{cache_key}
+    -> text and audio start much closer together
+```
+
 ### Frontend Routes
 
 | Route | Description |
@@ -313,6 +355,7 @@ interview-ai/
 │   │   │   └── coach.py
 │   │   ├── api/               # FastAPI route handlers
 │   │   │   ├── routes.py      # Interview endpoints (REST + SSE streaming)
+│   │   │   ├── voice_routes.py # Voice endpoints (TTS + STT)
 │   │   │   └── auth_routes.py # Authentication endpoints
 │   │   ├── core/              # Config, LLM setup, prompts, auth, rate limiting
 │   │   │   ├── config.py
@@ -328,6 +371,8 @@ interview-ai/
 │   │   ├── services/          # Business logic
 │   │   │   ├── interview.py   # Session management, answer processing, SSE streaming
 │   │   │   ├── database.py    # CRUD operations, ownership verification
+│   │   │   ├── stt_context.py # Session-aware Whisper prompt/glossary helpers
+│   │   │   ├── tts_prefetch.py # Warm-cache TTS generation for low-latency playback
 │   │   │   └── users.py       # User management
 │   │   └── main.py            # FastAPI app, CORS, health check, lifespan
 │   ├── tests/
@@ -351,9 +396,12 @@ interview-ai/
 │   │   │   └── report/        # ScoreGauge, QuestionAccordion
 │   │   ├── hooks/             # Custom React hooks
 │   │   │   ├── useSSEAnswer.ts    # SSE streaming for answer submission
-│   │   │   └── useAutoSave.ts     # Draft auto-save to localStorage
+│   │   │   ├── useAutoSave.ts     # Draft auto-save to localStorage
+│   │   │   ├── useTextToSpeech.ts # AI voice playback
+│   │   │   └── useVoiceRecorder.ts # Microphone recording + STT upload
 │   │   ├── lib/               # Utilities
 │   │   │   ├── api.ts         # Axios client + API functions
+│   │   │   ├── audio.ts       # Audio format detection + WAV conversion helpers
 │   │   │   ├── exportReportPDF.ts # jsPDF report export
 │   │   │   └── utils.ts       # cn() helper
 │   │   └── store/
@@ -382,6 +430,8 @@ interview-ai/
 | Cache | Redis (Upstash) |
 | ORM | SQLAlchemy Async + asyncpg |
 | Auth | JWT (httpOnly cookie) |
+| STT | Groq Whisper |
+| TTS | edge-tts |
 | Package Manager | uv |
 
 ### Frontend
@@ -445,7 +495,9 @@ MAX_QUESTIONS=8
 MAX_FOLLOW_UPS=1
 SESSION_TTL_SECONDS=7200
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
-APP_ENV=development
+TTS_VOICE_EN=en-US-AriaNeural
+TTS_VOICE_ID=id-ID-GadisNeural
+WHISPER_MODEL=whisper-large-v3
 ```
 
 ### Frontend Environment Variables
@@ -462,7 +514,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 - Groq has payload size limits; large coaching reports automatically fall back to Gemini.
 - Sessions expire from Redis cache after 2 hours of inactivity; data persists in PostgreSQL.
 - Free tier database (Neon 512MB) supports approximately 10,000 sessions.
-- Web Speech API (if voice mode is added) has limited Bahasa Indonesia support on some mobile browsers.
+- Voice mode depends on browser microphone support, `MediaRecorder`, and autoplay permissions.
+- Web Speech / browser speech recognition preview can differ from the final Whisper transcript.
+- TTS prefetch cache is currently in-memory per backend process; multi-worker or multi-instance deployments need a shared cache layer.
 - No formal database migration tool (Alembic) set up yet — schema changes require manual migration.
 - Test coverage is minimal; no integration or E2E test suites yet.
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const protectedRoutes = ["/interview", "/history", "/dashboard"];
+const protectedRoutes = ["/interview", "/history", "/dashboard", "/profile"];
 const authRoutes = ["/auth/login", "/auth/register"];
 
 export function proxy(request: NextRequest) {
@@ -33,5 +33,6 @@ export const config = {
     "/history/:path*",
     "/auth/:path*",
     "/dashboard/:path*",
+    "/profile/:path*",
   ],
 };

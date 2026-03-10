@@ -11,15 +11,18 @@ import {
   Menu,
   X,
   LayoutDashboard,
+  UserCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/store/authStore";
 import { cn } from "@/lib/utils";
+import ThemeToggle from "@/components/layout/ThemeToggle";
 
 const navLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/interview/start", label: "Start Interview", icon: Play },
   { href: "/history", label: "History", icon: History },
+  { href: "/profile", label: "Profile", icon: UserCircle },
 ];
 
 export default function Navbar() {
@@ -37,10 +40,10 @@ export default function Navbar() {
   if (!user) return null;
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 glass border-b border-white/5">
+    <nav className="fixed top-0 left-0 right-0 z-50 glass border-b border-border/50">
       <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
         <Link href="/dashboard" className="shrink-0">
-          <span className="text-xl font-bold">Interview AI</span>
+          <span className="text-xl font-bold gradient-text">Interview AI</span>
         </Link>
 
         {/* Desktop */}
@@ -54,7 +57,7 @@ export default function Navbar() {
                   size="sm"
                   className={cn(
                     "gap-2 text-muted-foreground hover:text-foreground",
-                    active && "text-foreground bg-white/5"
+                    active && "text-foreground bg-accent"
                   )}
                 >
                   <Icon className="h-4 w-4" />
@@ -65,7 +68,8 @@ export default function Navbar() {
           })}
         </div>
 
-        <div className="hidden md:flex items-center gap-3">
+        <div className="hidden md:flex items-center gap-2">
+          <ThemeToggle />
           <span className="text-sm text-muted-foreground truncate max-w-45">
             {user.full_name}
           </span>
@@ -82,6 +86,7 @@ export default function Navbar() {
 
         {/* Mobile actions */}
         <div className="flex items-center gap-1 md:hidden">
+          <ThemeToggle />
           <Button
             variant="ghost"
             size="icon"
@@ -114,7 +119,7 @@ export default function Navbar() {
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.2 }}
-            className="md:hidden border-t border-white/5 overflow-hidden"
+            className="md:hidden border-t border-border/50 overflow-hidden"
           >
             <div className="px-4 py-3 space-y-1">
               {navLinks.map(({ href, label, icon: Icon }) => {
@@ -123,8 +128,8 @@ export default function Navbar() {
                   <Link key={href} href={href} onClick={() => setMobileOpen(false)}>
                     <div
                       className={cn(
-                        "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors",
-                        active && "text-foreground bg-white/5"
+                        "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors",
+                        active && "text-foreground bg-accent"
                       )}
                     >
                       <Icon className="h-4 w-4" />
@@ -134,13 +139,13 @@ export default function Navbar() {
                 );
               })}
 
-              <div className="border-t border-white/5 pt-2 mt-2">
+              <div className="border-t border-border/50 pt-2 mt-2">
                 <div className="px-3 py-2 text-sm text-muted-foreground truncate">
                   {user.full_name}
                 </div>
                 <button
                   onClick={handleLogout}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-destructive hover:bg-white/5 transition-colors w-full"
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-destructive hover:bg-accent transition-colors w-full"
                 >
                   <LogOut className="h-4 w-4" />
                   Sign Out

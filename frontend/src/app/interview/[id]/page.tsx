@@ -10,6 +10,9 @@ import {
   AlertCircle,
   Bot,
   RotateCcw,
+  Mic,
+  MicOff,
+  Volume2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,10 +20,13 @@ import { Badge } from "@/components/ui/badge";
 import ChatBubble from "@/components/interview/ChatBubble";
 import EvaluationCard from "@/components/interview/EvaluationCard";
 import ProgressBar from "@/components/interview/ProgressBar";
+import VoiceModePrompt from "@/components/interview/VoiceModePrompt";
+import VoiceInput from "@/components/interview/VoiceInput";
 import { interviewAPI, getErrorMessage } from "@/lib/api";
 import { useSSEAnswer } from "@/hooks/useSSEAnswer";
-import type { Evaluation } from "@/lib/api";
 import { useAutoSave } from "@/hooks/useAutoSave";
+import { useTextToSpeech } from "@/hooks/useTextToSpeech";
+import type { Evaluation } from "@/lib/api";
 
 interface Message {
   id: string;
@@ -28,6 +34,7 @@ interface Message {
   content: string;
   isFollowUp?: boolean;
   evaluation?: Evaluation;
+  ttsCacheKey?: string;
 }
 
 export default function InterviewSessionPage() {
@@ -43,9 +50,27 @@ export default function InterviewSessionPage() {
   const [interviewType, setInterviewType] = useState("");
   const [difficulty, setDifficulty] = useState("");
   const [candidateName, setCandidateName] = useState("");
+  const [sessionLanguage, setSessionLanguage] = useState("en");
   const [initialLoading, setInitialLoading] = useState(true);
   const [reloadingSession, setReloadingSession] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+    // Voice Mode
+  const [showVoicePrompt, setShowVoicePrompt] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const voiceInitializedRef = useRef(false);
+  const { isSpeaking, speak, stop: stopTTS } = useTextToSpeech();
+
+  // Read voice param from URL on mount
+  useEffect(() => {
+    if (voiceInitializedRef.current) return;
+    voiceInitializedRef.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("voice") === "1") {
+      setVoiceEnabled(true);
+    }
+  }, []);
 
   // SSE Hook
   const {
@@ -63,6 +88,7 @@ export default function InterviewSessionPage() {
   const lastProcessedPhaseRef = useRef<string>("");
   const pendingAnswerRef = useRef<string>("");
   const userMessageIdRef = useRef<string>("");
+  const ttsTriggeredRef = useRef<string>("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -81,13 +107,29 @@ export default function InterviewSessionPage() {
     }
   }, []);
 
+  // TTS auto-play for new questions
+  const triggerTTS = useCallback(
+    (text: string, msgId: string, cacheKey?: string) => {
+      if (!voiceEnabled) return;
+      if (ttsTriggeredRef.current === msgId) return;
+      ttsTriggeredRef.current = msgId;
+      speak(text, sessionLanguage, { cacheKey });
+    },
+    [voiceEnabled, speak, sessionLanguage]
+  );
+
   // Load Session
   const loadSession = useCallback(async () => {
     setError(null);
     setReloadingSession(true);
 
     try {
-      const session = await interviewAPI.getSession(sessionId);
+      const voiceFromUrl =
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("voice") === "1";
+      const session = await interviewAPI.getSession(sessionId, {
+        prefetchTTS: voiceFromUrl,
+      });
 
       setQuestionNumber(session.question_number);
       setTotalQuestions(session.total_questions);
@@ -95,6 +137,7 @@ export default function InterviewSessionPage() {
       setInterviewType(session.interview_type || "");
       setDifficulty(session.difficulty || "");
       setCandidateName(session.candidate_name || "");
+      setSessionLanguage(session.language || "en");
 
       if (session.status === "completed") {
         router.replace(`/interview/${sessionId}/report`);
@@ -102,14 +145,28 @@ export default function InterviewSessionPage() {
       }
 
       if (session.current_question) {
+        const msgId = `q-${session.question_number}`;
         setMessages([
           {
-            id: `q-${session.question_number}`,
+            id: msgId,
             role: "ai",
             content: session.current_question,
             isFollowUp: session.is_follow_up,
+            ttsCacheKey: session.tts_cache_key || undefined,
           },
         ]);
+
+        // Show voice prompt only if voice not enabled via URL
+        setTimeout(() => {
+          if (
+            !voiceFromUrl &&
+            typeof window !== "undefined" &&
+            !!navigator.mediaDevices?.getUserMedia &&
+            !!window.MediaRecorder
+          ) {
+            setShowVoicePrompt(true);
+          }
+        }, 100);
       }
     } catch (err) {
       setError(getErrorMessage(err));
@@ -123,7 +180,7 @@ export default function InterviewSessionPage() {
     loadSession();
   }, [loadSession]);
 
-  // Restore draft when question changes
+  // Restore draft
   useEffect(() => {
     if (!submitting) {
       const draft = autoSave.load();
@@ -143,15 +200,25 @@ export default function InterviewSessionPage() {
   useEffect(() => {
     return () => {
       cancel();
+      stopTTS();
     };
-  }, [cancel]);
+  }, [cancel, stopTTS]);
+
+  // TTS for latest AI message
+  useEffect(() => {
+    if (!voiceEnabled) return;
+    if (messages.length === 0) return;
+
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role === "ai" && lastMsg.content && !lastMsg.evaluation) {
+      triggerTTS(lastMsg.content, lastMsg.id, lastMsg.ttsCacheKey);
+    }
+  }, [messages, voiceEnabled, triggerTTS]);
 
   // SSE Phase Reactions
   useEffect(() => {
-    // Skip phases already processed
     if (ssePhase === lastProcessedPhaseRef.current) return;
 
-    // Passthrough phases — just track
     if (
       ssePhase === "idle" ||
       ssePhase === "processing" ||
@@ -163,7 +230,6 @@ export default function InterviewSessionPage() {
       return;
     }
 
-    // Evaluated → add evaluation card
     if (ssePhase === "evaluated" && sseEvaluation) {
       lastProcessedPhaseRef.current = "evaluated";
       const evalMessage: Message = {
@@ -175,7 +241,6 @@ export default function InterviewSessionPage() {
       setMessages((prev) => [...prev, evalMessage]);
     }
 
-    // Follow-up → add follow-up question
     if (ssePhase === "follow_up" && sseResult) {
       lastProcessedPhaseRef.current = "follow_up";
       setQuestionNumber(sseResult.question_number);
@@ -187,14 +252,15 @@ export default function InterviewSessionPage() {
           role: "ai",
           content: sseResult.current_question,
           isFollowUp: true,
+          ttsCacheKey: sseResult.tts_cache_key || undefined,
         };
         setMessages((prev) => [...prev, followUpQ]);
+        triggerTTS(followUpQ.content, followUpQ.id, followUpQ.ttsCacheKey);
       }
 
       textareaRef.current?.focus();
     }
 
-    // Result → next question or redirect to report
     if (ssePhase === "result" && sseResult) {
       lastProcessedPhaseRef.current = "result";
       setQuestionNumber(sseResult.question_number);
@@ -215,14 +281,15 @@ export default function InterviewSessionPage() {
             role: "ai",
             content: sseResult.current_question!,
             isFollowUp: sseResult.is_follow_up,
+            ttsCacheKey: sseResult.tts_cache_key || undefined,
           };
           setMessages((prev) => [...prev, nextQ]);
+          triggerTTS(nextQ.content, nextQ.id, nextQ.ttsCacheKey);
           textareaRef.current?.focus();
         }, 600);
       }
     }
 
-    // Error → show error, rollback user message
     if (ssePhase === "error") {
       lastProcessedPhaseRef.current = "error";
       setError(sseError || "An unexpected error occurred");
@@ -233,9 +300,9 @@ export default function InterviewSessionPage() {
         );
       }
     }
-  }, [ssePhase, sseEvaluation, sseResult, sseError, sessionId, router, autoSave]);
+  }, [ssePhase, sseEvaluation, sseResult, sseError, sessionId, router, autoSave, triggerTTS]);
 
-  // Submit Handler (SSE)
+  // Submit Handler
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
 
@@ -249,10 +316,11 @@ export default function InterviewSessionPage() {
 
     setError(null);
 
-    // Store for rollback on error
+    // Stop TTS if playing
+    if (isSpeaking) stopTTS();
+
     pendingAnswerRef.current = trimmed;
 
-    // Optimistically add user message
     const userMsgId = `a-${Date.now()}`;
     userMessageIdRef.current = userMsgId;
     const userMessage: Message = {
@@ -263,10 +331,9 @@ export default function InterviewSessionPage() {
     setMessages((prev) => [...prev, userMessage]);
     setAnswer("");
 
-    // Reset tracking and start SSE stream
     lastProcessedPhaseRef.current = "";
     autoSave.clear();
-    submitStream(sessionId, trimmed);
+    submitStream(sessionId, trimmed, { prefetchTTS: voiceEnabled });
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -274,6 +341,33 @@ export default function InterviewSessionPage() {
       e.preventDefault();
       handleSubmit(e as unknown as FormEvent);
     }
+  }
+
+  // Voice Mode Handlers
+  function handleEnableVoice() {
+    setVoiceEnabled(true);
+    setShowVoicePrompt(false);
+
+    if (messages.length > 0) {
+      const firstMsg = messages[0];
+      if (firstMsg.role === "ai" && firstMsg.content) {
+        triggerTTS(
+          firstMsg.content,
+          firstMsg.id + "-voice-init",
+          firstMsg.ttsCacheKey
+        );
+      }
+    }
+  }
+
+  function handleDismissVoice() {
+    setShowVoicePrompt(false);
+  }
+
+  function handleTranscriptReady(text: string) {
+    setAnswer(text);
+    autoSave.save(text);
+    textareaRef.current?.focus();
   }
 
   // Loading State
@@ -336,8 +430,15 @@ export default function InterviewSessionPage() {
 
   return (
     <main className="pt-16 flex flex-col h-screen">
+      {/* Voice Mode Prompt */}
+      <VoiceModePrompt
+        open={showVoicePrompt}
+        onEnable={handleEnableVoice}
+        onDismiss={handleDismissVoice}
+      />
+
       {/* Header */}
-      <div className="border-b border-white/5 bg-background/80 backdrop-blur-md px-4 py-3">
+      <div className="border-b border-border/50 bg-background/80 backdrop-blur-md px-4 py-3">
         <div className="max-w-3xl mx-auto space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 flex-wrap">
@@ -365,6 +466,30 @@ export default function InterviewSessionPage() {
                 )}
               </div>
             </div>
+
+            {/* Voice toggle */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                if (voiceEnabled) {
+                  setVoiceEnabled(false);
+                  stopTTS();
+                } else {
+                  setVoiceEnabled(true);
+                }
+              }}
+              className={`gap-1.5 text-xs ${
+                voiceEnabled ? "text-primary" : "text-muted-foreground"
+              }`}
+            >
+              {voiceEnabled ? (
+                <Mic className="h-3.5 w-3.5" />
+              ) : (
+                <MicOff className="h-3.5 w-3.5" />
+              )}
+              {voiceEnabled ? "Voice On" : "Voice Off"}
+            </Button>
           </div>
           <ProgressBar current={questionNumber} total={totalQuestions} />
         </div>
@@ -382,12 +507,31 @@ export default function InterviewSessionPage() {
               }
 
               return (
-                <ChatBubble
-                  key={msg.id}
-                  role={msg.role}
-                  content={msg.content}
-                  isFollowUp={msg.isFollowUp}
-                />
+                <div key={msg.id}>
+                  <ChatBubble
+                    role={msg.role}
+                    content={msg.content}
+                    isFollowUp={msg.isFollowUp}
+                  />
+                  {/* Manual TTS button on AI messages */}
+                  {msg.role === "ai" && msg.content && voiceEnabled && (
+                    <button
+                      onClick={() => {
+                        if (isSpeaking) {
+                          stopTTS();
+                        } else {
+                          speak(msg.content, sessionLanguage, {
+                            cacheKey: msg.ttsCacheKey,
+                          });
+                        }
+                      }}
+                      className="mt-1 ml-11 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-primary transition"
+                    >
+                      <Volume2 className="h-3 w-3" />
+                      {isSpeaking ? "Stop" : "Listen"}
+                    </button>
+                  )}
+                </div>
               );
             })}
           </AnimatePresence>
@@ -400,7 +544,7 @@ export default function InterviewSessionPage() {
               exit={{ opacity: 0 }}
               className="flex items-center gap-3 max-w-[85%]"
             >
-              <div className="h-8 w-8 rounded-lg bg-white/5 flex items-center justify-center">
+              <div className="h-8 w-8 rounded-lg bg-muted/50 flex items-center justify-center">
                 <Bot className="h-4 w-4 text-muted-foreground" />
               </div>
               <div className="glass rounded-2xl rounded-tl-md px-4 py-3">
@@ -417,8 +561,8 @@ export default function InterviewSessionPage() {
       </div>
 
       {/* Input Area */}
-      <div className="border-t border-white/5 bg-background/80 backdrop-blur-md px-4 py-4">
-        <div className="max-w-3xl mx-auto">
+      <div className="border-t border-border/50 bg-background/80 backdrop-blur-md px-4 py-4">
+        <div className="max-w-3xl mx-auto space-y-3">
           {isCompleted ? (
             <Button
               className="w-full glow"
@@ -429,45 +573,64 @@ export default function InterviewSessionPage() {
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           ) : (
-            <form onSubmit={handleSubmit} className="flex gap-3">
-              <div className="flex-1 relative">
-                <Textarea
-                  ref={textareaRef}
-                  value={answer}
-                  onChange={(e) => {
-                    setAnswer(e.target.value);
-                    autoSave.save(e.target.value);
-                  }}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Type your answer... (Shift+Enter for new line)"
-                  rows={2}
+            <>
+              {/* Voice Input */}
+              {voiceEnabled && (
+                <VoiceInput
+                  sessionId={sessionId}
+                  language={sessionLanguage}
+                  onTranscriptReady={handleTranscriptReady}
                   disabled={submitting}
-                  className="resize-none pr-12 min-h-13 max-h-40"
+                  isSpeaking={isSpeaking}
+                  onStopTTS={stopTTS}
                 />
-                <span className="absolute bottom-2 right-3 text-xs text-muted-foreground">
-                  {answer.length > 0 && answer.length.toLocaleString()}
-                </span>
-              </div>
-              <Button
-                type="submit"
-                size="icon"
-                className="h-13 w-13 shrink-0 glow"
-                disabled={submitting || !answer.trim()}
-              >
-                {submitting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-              </Button>
-            </form>
+              )}
+
+              {/* Text Input */}
+              <form onSubmit={handleSubmit} className="flex gap-3">
+                <div className="flex-1 relative">
+                  <Textarea
+                    ref={textareaRef}
+                    value={answer}
+                    onChange={(e) => {
+                      setAnswer(e.target.value);
+                      autoSave.save(e.target.value);
+                    }}
+                    onKeyDown={handleKeyDown}
+                    placeholder={
+                      voiceEnabled
+                        ? "Transcript will appear here. You can also type..."
+                        : "Type your answer... (Shift+Enter for new line)"
+                    }
+                    rows={2}
+                    disabled={submitting}
+                    className="resize-none pr-12 min-h-13 max-h-40"
+                  />
+                  <span className="absolute bottom-2 right-3 text-xs text-muted-foreground">
+                    {answer.length > 0 && answer.length.toLocaleString()}
+                  </span>
+                </div>
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="h-13 w-13 shrink-0 glow"
+                  disabled={submitting || !answer.trim()}
+                >
+                  {submitting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                </Button>
+              </form>
+            </>
           )}
 
           {error && messages.length > 0 && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="mt-2 flex items-center justify-between gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              className="flex items-center justify-between gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive"
             >
               <span>{error}</span>
               <button
