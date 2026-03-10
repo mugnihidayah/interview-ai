@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes import router
 from app.api.auth_routes import router as auth_router
+from app.api.voice_routes import router as voice_router
 from app.core.database import init_db, close_db, get_db
 from app.core.redis import init_redis, close_redis, get_redis
 from app.core.auth import get_current_user
@@ -20,7 +21,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 
 
 # LIFESPAN
@@ -65,6 +66,7 @@ app.add_middleware(
 # include API routers
 app.include_router(router)
 app.include_router(auth_router)
+app.include_router(voice_router)
 
 
 # HEALTH CHECK — fixed typo + added dependency checks

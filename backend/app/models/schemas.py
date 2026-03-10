@@ -201,31 +201,31 @@ class InterviewState(BaseModel):
     This tracks everything about an interview session.
     """
 
-    # --- Input (set once at start) ---
+    # Input (set once at start)
     resume_text: str = ""
     job_description: str = ""
     interview_type: InterviewType = InterviewType.BEHAVIORAL
     difficulty: Difficulty = Difficulty.JUNIOR
     language: Language = Language.ENGLISH
 
-    # --- Resume Analysis ---
+    # Resume Analysis
     candidate_profile: Optional[CandidateProfile] = None
 
-    # --- Interview Plan ---
+    # Interview Plan
     interview_plan: Optional[InterviewPlan] = None
 
-    # --- Interview Progress ---
+    # Interview Progress
     current_question_index: int = 0
     current_question: str = ""
     is_follow_up: bool = False
     follow_up_count: int = 0
 
-    # --- Q&A History ---
+    # Q&A History
     qa_pairs: list[QAPair] = Field(default_factory=list)
 
-    # --- Final Report ---
+    # Final Report
     final_report: Optional[FinalReport] = None
 
-    # --- Flow Control ---
+    # Flow Control
     status: str = "initialized"  # initialized | analyzing | planning | interviewing | evaluating | coaching | completed | error
     error_message: Optional[str] = None

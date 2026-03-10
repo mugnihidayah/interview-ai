@@ -1,8 +1,6 @@
 import logging
-from fastapi import HTTPException, Request, Depends
+from fastapi import HTTPException
 from app.core.redis import get_redis
-from app.core.auth import get_current_user
-from app.models.tables import UserTable
 
 logger = logging.getLogger(__name__)
 

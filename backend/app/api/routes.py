@@ -1,3 +1,4 @@
+from collections.abc import AsyncGenerator
 import logging
 from typing import Optional
 import json
@@ -18,6 +19,7 @@ from app.services.database import (
     delete_session,
     verify_session_ownership,
 )
+from app.services.tts_prefetch import prefetch_tts_audio
 from app.core.redis import delete_cache
 from app.core.rate_limiter import (
     interview_start_limiter,
@@ -44,6 +46,10 @@ class SubmitAnswerRequest(BaseModel):
         min_length=1,
         max_length=10000,
         description="Candidate's answer to the current question",
+    )
+    prefetch_tts: bool = Field(
+        default=False,
+        description="Whether the backend should warm TTS audio for the next AI question",
     )
 
 
@@ -80,6 +86,7 @@ class SubmitAnswerResponse(BaseModel):
     total_questions: int
     last_evaluation: Optional[EvaluationDetail] = None
     final_report: Optional[dict] = None
+    tts_cache_key: Optional[str] = None
     error_message: Optional[str] = None
 
 
@@ -91,6 +98,7 @@ class SessionStatusResponse(BaseModel):
     candidate_name: Optional[str] = None
     interview_type: Optional[str] = None
     difficulty: Optional[str] = None
+    language: Optional[str] = None
     current_question: Optional[str] = None
     question_number: int
     is_follow_up: bool
@@ -98,6 +106,7 @@ class SessionStatusResponse(BaseModel):
     questions_answered: int
     overall_score: Optional[float] = None
     overall_grade: Optional[str] = None
+    tts_cache_key: Optional[str] = None
     error_message: Optional[str] = None
 
 
@@ -242,6 +251,7 @@ async def submit_answer_endpoint(
             total_questions=settings.MAX_QUESTIONS,
             last_evaluation=last_eval,
             final_report=final_report,
+            tts_cache_key=None,
             error_message=state.error_message,
         )
 
@@ -290,10 +300,13 @@ async def submit_answer_stream_endpoint(
     except ValueError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    async def event_generator():
+    async def event_generator() -> AsyncGenerator[str, None]:
         try:
             async for event in interview_service.submit_answer_stream(
-                db, request.session_id, request.answer
+                db,
+                request.session_id,
+                request.answer,
+                prefetch_tts=request.prefetch_tts,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
@@ -317,6 +330,7 @@ async def submit_answer_stream_endpoint(
 @router.get("/session/{session_id}", response_model=SessionStatusResponse)
 async def get_session_endpoint(
     session_id: str,
+    prefetch_tts: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: UserTable = Depends(get_current_user),
 ):
@@ -351,12 +365,30 @@ async def get_session_endpoint(
             overall_score = state.final_report.overall_score
             overall_grade = state.final_report.overall_grade.value
 
+        tts_cache_key = None
+        if prefetch_tts and current_q:
+            try:
+                tts_cache_key = await prefetch_tts_audio(
+                    session_id=session_id,
+                    question_number=state.current_question_index + 1,
+                    text=current_q,
+                    language=state.language.value,
+                    is_follow_up=awaiting_follow_up,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to prefetch TTS for session %s: %s",
+                    session_id,
+                    type(exc).__name__,
+                )
+
         return SessionStatusResponse(
             session_id=session_id,
             status=display_status,
             candidate_name=candidate_name,
             interview_type=state.interview_type.value,
             difficulty=state.difficulty.value,
+            language=state.language.value,
             current_question=current_q,
             question_number=state.current_question_index + 1,
             is_follow_up=awaiting_follow_up,
@@ -364,6 +396,7 @@ async def get_session_endpoint(
             questions_answered=len(state.qa_pairs),
             overall_score=overall_score,
             overall_grade=overall_grade,
+            tts_cache_key=tts_cache_key,
             error_message=state.error_message,
         )
 

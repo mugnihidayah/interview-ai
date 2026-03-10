@@ -1,5 +1,5 @@
 """
-Authentication API routes: register, login, me.
+Authentication API routes: register, login, me, profile, password.
 """
 
 import logging
@@ -15,9 +15,15 @@ from app.core.auth import (
 )
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.tables import UserTable
-from app.services.users import create_user, get_user_by_email
 from app.core.rate_limiter import auth_limiter
+from app.models.tables import UserTable
+from app.services.users import (
+    create_user,
+    get_user_by_email,
+    update_user_profile,
+    change_user_password,
+    get_user_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,8 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 # Request / Response Models
+
+
 class RegisterRequest(BaseModel):
     """Request body for user registration."""
 
@@ -56,6 +64,29 @@ class UserResponse(BaseModel):
     full_name: str
 
 
+class UpdateProfileRequest(BaseModel):
+    """Request body for updating user profile."""
+
+    full_name: str = Field(..., min_length=1, max_length=100)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Request body for changing password."""
+
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class UserStatsResponse(BaseModel):
+    """User interview statistics."""
+
+    total_sessions: int
+    completed_sessions: int
+    average_score: float | None
+    best_score: float | None
+    member_since: str | None
+
+
 def _set_auth_cookie(response: Response, token: str) -> None:
     """Set httpOnly cookie with JWT token."""
     response.set_cookie(
@@ -70,6 +101,8 @@ def _set_auth_cookie(response: Response, token: str) -> None:
 
 
 # Endpoints
+
+
 @router.post("/register", response_model=AuthResponse, status_code=201)
 async def register_endpoint(
     request: RegisterRequest,
@@ -78,7 +111,6 @@ async def register_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new user account."""
-    # Rate limit by IP
     client_ip = raw_request.client.host if raw_request.client else "unknown"
     auth_limiter.check(f"ip:{client_ip}")
 
@@ -125,7 +157,6 @@ async def login_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Login with email and password."""
-    # Rate limit by IP
     client_ip = raw_request.client.host if raw_request.client else "unknown"
     auth_limiter.check(f"ip:{client_ip}")
 
@@ -155,7 +186,6 @@ async def logout_endpoint(
     raw_request: Request,
 ):
     """Clear the auth cookie."""
-    # Rate limit by IP
     client_ip = raw_request.client.host if raw_request.client else "unknown"
     auth_limiter.check(f"ip:{client_ip}")
 
@@ -178,3 +208,68 @@ async def me_endpoint(
         email=current_user.email,
         full_name=current_user.full_name,
     )
+
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile_endpoint(
+    request: UpdateProfileRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
+):
+    """Update user profile (full name)."""
+    user = await update_user_profile(
+        db,
+        user_id=current_user.id,
+        full_name=request.full_name,
+    )
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+    )
+
+
+@router.put("/password")
+async def change_password_endpoint(
+    request: ChangePasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
+):
+    """Change user password."""
+    if request.current_password == request.new_password:
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be different from current password",
+        )
+
+    try:
+        success = await change_user_password(
+            db,
+            user_id=current_user.id,
+            current_password=request.current_password,
+            new_password=request.new_password,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Current password is incorrect",
+        )
+
+    return {"message": "Password changed successfully"}
+
+
+@router.get("/stats", response_model=UserStatsResponse)
+async def user_stats_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current_user: UserTable = Depends(get_current_user),
+):
+    """Get interview statistics for the current user."""
+    stats = await get_user_stats(db, current_user.id)
+    return UserStatsResponse(**stats)

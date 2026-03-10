@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
 
     # LLM models
-    PRIMARY_MODEL: str = "openai/gpt-oss-120b"
+    PRIMARY_MODEL: str = "llama-3.3-70b-versatile"
     FALLBACK_MODEL: str = "gemini-2.5-flash"
     LLM_TEMPERATURE: float = 0.7
 
@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     # Auth
     JWT_SECRET: str = "change-me-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
+    # Voice - TTS (edge-tts voices)
+    TTS_VOICE_EN: str = "en-US-AriaNeural"
+    TTS_VOICE_ID: str = "id-ID-GadisNeural"
+
+    # Voice - STT (Groq Whisper)
+    WHISPER_MODEL: str = "whisper-large-v3"
 
     # app
     APP_ENV: str = "development"

@@ -1,7 +1,9 @@
 import asyncio
+from collections.abc import AsyncGenerator
 import logging
 import re
 import uuid
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +20,7 @@ from app.core.config import settings
 from app.core.redis import delete_cache, get_cache, set_cache
 from app.models.schemas import InterviewConfig, InterviewState, QAPair
 from app.services import database as db_service
+from app.services.tts_prefetch import prefetch_tts_audio
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +368,9 @@ async def submit_answer_stream(
     db: AsyncSession,
     session_id: str,
     answer: str,
-):
+    *,
+    prefetch_tts: bool = False,
+) -> AsyncGenerator[dict[str, Any], None]:
     """
     Streaming version of submit_answer.
 
@@ -421,6 +426,11 @@ async def submit_answer_stream(
             return
 
         if state.is_follow_up:
+            yield {
+                "phase": "generating_question",
+                "message": "Preparing follow-up question...",
+            }
+
             # Generate follow-up question and return early
             pending_question = state.current_question
 
@@ -441,6 +451,23 @@ async def submit_answer_stream(
                 pending_main_answer=clean_answer,
             )
 
+            tts_cache_key = None
+            if prefetch_tts and state.current_question:
+                yield {
+                    "phase": "generating_question",
+                    "message": "Preparing follow-up audio...",
+                }
+                try:
+                    tts_cache_key = await prefetch_tts_audio(
+                        session_id=session_id,
+                        question_number=state.current_question_index + 1,
+                        text=state.current_question,
+                        language=state.language.value,
+                        is_follow_up=True,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to prefetch TTS for follow-up: %s", str(e))
+
             logger.info(
                 "Stream: follow-up generated for Q%d",
                 state.current_question_index + 1,
@@ -457,6 +484,7 @@ async def submit_answer_stream(
                     "total_questions": settings.MAX_QUESTIONS,
                     "last_evaluation": None,
                     "final_report": None,
+                    "tts_cache_key": tts_cache_key,
                     "error_message": None,
                 },
             }
@@ -582,6 +610,23 @@ async def submit_answer_stream(
         await _cache_session(session_id, state)
         await db_service.update_session_status(db, session_id, state.status)
 
+        tts_cache_key = None
+        if prefetch_tts and state.current_question:
+            yield {
+                "phase": "generating_question",
+                "message": "Preparing voice playback...",
+            }
+            try:
+                tts_cache_key = await prefetch_tts_audio(
+                    session_id=session_id,
+                    question_number=state.current_question_index + 1,
+                    text=state.current_question,
+                    language=state.language.value,
+                    is_follow_up=False,
+                )
+            except Exception as e:
+                logger.warning("Failed to prefetch TTS for next question: %s", str(e))
+
         logger.info(
             "Stream: Q%d ready for session %s",
             state.current_question_index + 1,
@@ -599,6 +644,7 @@ async def submit_answer_stream(
                 "total_questions": settings.MAX_QUESTIONS,
                 "last_evaluation": eval_data,
                 "final_report": None,
+                "tts_cache_key": tts_cache_key,
                 "error_message": None,
             },
         }

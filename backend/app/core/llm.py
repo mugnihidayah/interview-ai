@@ -45,7 +45,7 @@ def invoke_llm(
     4. If Gemini also fails → raise error
     """
 
-    # Attempt 1: Try primary with retries
+    # Try primary with retries
     for attempt in range(retry_count + 1):
         try:
             llm = get_primary()
@@ -77,7 +77,7 @@ def invoke_llm(
                 )
                 break
 
-    # Attempt 2: Fallback to Gemini
+    # Fallback to Gemini
     try:
         llm = get_fallback()
         response = llm.invoke(messages)
