@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes import router
 from app.api.auth_routes import router as auth_router
 from app.api.voice_routes import router as voice_router
+from app.core.config import settings
 from app.core.database import init_db, close_db, get_db
 from app.core.redis import init_redis, close_redis, get_redis
 from app.core.auth import get_current_user
@@ -23,6 +24,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.0"
+
+
+def get_allowed_origins() -> list[str]:
+    """Parse comma-separated CORS origins from environment settings."""
+    origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
+    return [origin for origin in origins if origin]
 
 
 # LIFESPAN
@@ -55,10 +62,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

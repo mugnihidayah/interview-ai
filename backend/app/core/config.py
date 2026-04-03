@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     # app
     APP_ENV: str = "development"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     model_config = SettingsConfigDict(
         env_file=find_dotenv(),
