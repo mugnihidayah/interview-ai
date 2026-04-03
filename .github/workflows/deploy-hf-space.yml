@@ -1,0 +1,90 @@
+name: Deploy Backend to HF Space
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hf-space-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HF_SPACE_USERNAME: ${{ vars.HF_SPACE_USERNAME }}
+      HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
+      HF_SPACE_TITLE: ${{ vars.HF_SPACE_TITLE }}
+      HF_SPACE_EMOJI: ${{ vars.HF_SPACE_EMOJI }}
+      HF_SPACE_COLOR_FROM: ${{ vars.HF_SPACE_COLOR_FROM }}
+      HF_SPACE_COLOR_TO: ${{ vars.HF_SPACE_COLOR_TO }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate HF configuration
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -eu
+
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "Missing required secret: HF_TOKEN"
+            exit 1
+          fi
+
+          if [ -z "${HF_SPACE_USERNAME:-}" ]; then
+            echo "Missing required repository variable: HF_SPACE_USERNAME"
+            exit 1
+          fi
+
+          if [ -z "${HF_SPACE_REPO:-}" ]; then
+            echo "Missing required repository variable: HF_SPACE_REPO"
+            exit 1
+          fi
+
+      - name: Prepare Space README metadata
+        run: |
+          set -eu
+
+          TITLE="${HF_SPACE_TITLE:-Interview AI Backend}"
+          EMOJI="${HF_SPACE_EMOJI:-}"
+          COLOR_FROM="${HF_SPACE_COLOR_FROM:-blue}"
+          COLOR_TO="${HF_SPACE_COLOR_TO:-indigo}"
+
+          {
+            printf '%s\n' '---'
+            printf 'title: %s\n' "$TITLE"
+            if [ -n "$EMOJI" ]; then
+              printf 'emoji: %s\n' "$EMOJI"
+            fi
+            printf 'colorFrom: %s\n' "$COLOR_FROM"
+            printf 'colorTo: %s\n' "$COLOR_TO"
+            printf '%s\n' 'sdk: docker'
+            printf '%s\n' 'app_port: 7860'
+            printf '%s\n' '---'
+            printf '\n'
+          } > /tmp/hf-space-header.yml
+
+          cat /tmp/hf-space-header.yml README.md > /tmp/README_SPACE.md
+          mv /tmp/README_SPACE.md README.md
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -eu
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add README.md
+          git commit -m "Prepare README for HF Space deployment"
+
+          git remote add hf "https://${HF_SPACE_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_USERNAME}/${HF_SPACE_REPO}"
+          git push --force hf HEAD:main

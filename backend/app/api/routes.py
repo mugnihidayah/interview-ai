@@ -72,6 +72,7 @@ class StartInterviewResponse(BaseModel):
     candidate_name: str
     interview_type: str
     difficulty: str
+    tts_cache_key: Optional[str] = None
     error_message: Optional[str] = None
 
 
@@ -147,6 +148,7 @@ class CoachingReportResponse(BaseModel):
 @router.post("/start", response_model=StartInterviewResponse)
 async def start_interview_endpoint(
     config: InterviewConfig,
+    prefetch_tts: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: UserTable = Depends(get_current_user),
 ):
@@ -168,6 +170,23 @@ async def start_interview_endpoint(
         if state.candidate_profile:
             candidate_name = state.candidate_profile.candidate_name
 
+        tts_cache_key = None
+        if prefetch_tts and state.current_question:
+            try:
+                tts_cache_key = await prefetch_tts_audio(
+                    session_id=result["session_id"],
+                    question_number=state.current_question_index + 1,
+                    text=state.current_question,
+                    language=state.language.value,
+                    is_follow_up=state.is_follow_up,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to prefetch initial TTS for session %s: %s",
+                    result["session_id"],
+                    type(exc).__name__,
+                )
+
         return StartInterviewResponse(
             session_id=result["session_id"],
             status=state.status,
@@ -177,6 +196,7 @@ async def start_interview_endpoint(
             candidate_name=candidate_name,
             interview_type=state.interview_type.value,
             difficulty=state.difficulty.value,
+            tts_cache_key=tts_cache_key,
             error_message=state.error_message,
         )
 
