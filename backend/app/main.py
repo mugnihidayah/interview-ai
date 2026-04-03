@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes import router
@@ -67,6 +68,12 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(auth_router)
 app.include_router(voice_router)
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """Redirect root requests to the interactive API docs."""
+    return RedirectResponse(url="/docs", status_code=307)
 
 
 # HEALTH CHECK — fixed typo + added dependency checks
