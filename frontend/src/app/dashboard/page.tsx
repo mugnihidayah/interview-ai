@@ -26,6 +26,8 @@ import { interviewAPI, type SessionSummary } from "@/lib/api";
 
 /* Helpers */
 
+const SCORE_MAX = 10;
+
 function timeAgo(dateStr: string): string {
   const now = new Date();
   const date = new Date(dateStr);
@@ -79,10 +81,14 @@ function statusConfig(status: string) {
 }
 
 function scoreBarColor(score: number): string {
-  if (score >= 80) return "from-green-500 to-emerald-400";
-  if (score >= 60) return "from-blue-500 to-sky-400";
-  if (score >= 40) return "from-yellow-500 to-amber-400";
+  if (score >= 8) return "from-green-500 to-emerald-400";
+  if (score >= 6) return "from-blue-500 to-sky-400";
+  if (score >= 4) return "from-yellow-500 to-amber-400";
   return "from-red-500 to-orange-400";
+}
+
+function scoreToHeight(score: number): number {
+  return Math.max((score / SCORE_MAX) * 100, 12);
 }
 
 /* Animation variants */
@@ -446,20 +452,40 @@ export default function DashboardPage() {
               </div>
 
               {scoreTrend.length > 0 ? (
-                <div className="flex items-end gap-2 sm:gap-3 h-40">
+                <div className="relative h-52">
+                  <div className="pointer-events-none absolute inset-x-7 top-3 bottom-6">
+                    {[0, 1, 2].map((line) => (
+                      <div
+                        key={line}
+                        className="absolute left-0 right-0 border-t border-white/8"
+                        style={{ top: `${line * 50}%` }}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="pointer-events-none absolute inset-y-3 left-0 bottom-6 flex flex-col justify-between text-[10px] text-muted-foreground/70">
+                    <span>10</span>
+                    <span>5</span>
+                    <span>0</span>
+                  </div>
+
+                  <div className="flex h-full gap-3 pl-8">
                   {scoreTrend.map((session, i) => {
                     const score = session.overall_score || 0;
-                    const heightPct = Math.max(score, 5);
+                    const heightPct = scoreToHeight(score);
 
                     return (
                       <div
                         key={session.session_id}
-                        className="flex-1 flex flex-col items-center gap-1.5 group"
+                        className="group flex h-full min-w-0 flex-1 flex-col"
                       >
-                        <span className="text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity">
-                          {score}
+                        <span className="h-5 text-center text-xs font-medium opacity-0 transition-opacity group-hover:opacity-100">
+                          {score.toFixed(1)}
                         </span>
-                        <motion.div
+                        <div className="relative flex-1">
+                          <div className="absolute inset-x-1 bottom-0 top-0 flex items-end">
+                            <motion.button
+                              type="button"
                           initial={{ height: 0 }}
                           animate={{ height: `${heightPct}%` }}
                           transition={{
@@ -467,20 +493,23 @@ export default function DashboardPage() {
                             delay: i * 0.08,
                             ease: "easeOut",
                           }}
-                          className={`w-full rounded-t-md bg-linear-to-t ${scoreBarColor(score)} cursor-pointer hover:opacity-80 transition-opacity min-h-1`}
+                              className={`w-full rounded-t-xl bg-linear-to-t ${scoreBarColor(score)} shadow-[0_10px_30px_rgba(0,0,0,0.22)] transition-opacity hover:opacity-90`}
                           onClick={() =>
                             router.push(
                               `/interview/${session.session_id}/report`
                             )
                           }
                           title={`${session.interview_type} · ${session.difficulty} · Score: ${score}`}
-                        />
-                        <span className="text-[10px] text-muted-foreground capitalize truncate w-full text-center">
+                            />
+                          </div>
+                        </div>
+                        <span className="mt-2 text-[10px] text-muted-foreground capitalize truncate w-full text-center">
                           {session.interview_type?.slice(0, 4)}
                         </span>
                       </div>
                     );
                   })}
+                </div>
                 </div>
               ) : (
                 <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">

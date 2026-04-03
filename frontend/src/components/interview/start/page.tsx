@@ -62,6 +62,10 @@ interface OptionItem<T extends string> {
 const DRAFT_KEY = "interview_setup_draft_v2";
 const AUTOSAVE_DELAY_MS = 350;
 
+function interviewBootstrapKey(sessionId: string): string {
+  return `interview_bootstrap:${sessionId}`;
+}
+
 const interviewTypes: OptionItem<InterviewType>[] = [
   {
     value: "behavioral",
@@ -345,10 +349,25 @@ export default function InterviewStartPage() {
         interview_type: interviewType,
         difficulty,
         language,
+        prefetch_tts: voiceMode === "on",
       });
 
       if (typeof window !== "undefined") {
         window.localStorage.removeItem(DRAFT_KEY);
+        window.sessionStorage.setItem(
+          interviewBootstrapKey(response.session_id),
+          JSON.stringify({
+            session_id: response.session_id,
+            current_question: response.current_question,
+            question_number: response.question_number,
+            total_questions: response.total_questions,
+            candidate_name: response.candidate_name,
+            interview_type: response.interview_type,
+            difficulty: response.difficulty,
+            language,
+            tts_cache_key: response.tts_cache_key || null,
+          })
+        );
       }
 
       // Pass voice mode via URL param

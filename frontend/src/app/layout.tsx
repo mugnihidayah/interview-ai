@@ -20,6 +20,11 @@ export const metadata: Metadata = {
   title: "Interview AI | AI-Powered Interview Simulator",
   description:
     "Practice interviews with an AI that adapts to your resume, asks smart follow-ups, and gives detailed coaching feedback.",
+  icons: {
+    icon: "/favicon.svg?v=1",
+    shortcut: "/favicon.svg?v=1",
+    apple: "/favicon.svg?v=1",
+  },
 };
 
 export default function RootLayout({

@@ -90,6 +90,7 @@ export interface StartInterviewRequest {
   interview_type: "behavioral" | "technical";
   difficulty: "junior" | "mid" | "senior";
   language?: "en" | "id";
+  prefetch_tts?: boolean;
 }
 
 export interface StartInterviewResponse {
@@ -101,6 +102,7 @@ export interface StartInterviewResponse {
   candidate_name: string;
   interview_type: string;
   difficulty: string;
+  tts_cache_key?: string | null;
   error_message?: string | null;
 }
 
@@ -309,9 +311,22 @@ export const voiceAPI = {
 // Interview API
 export const interviewAPI = {
   start: async (payload: StartInterviewRequest) => {
+    const params = new URLSearchParams();
+    if (payload.prefetch_tts) {
+      params.set("prefetch_tts", "true");
+    }
+
+    const body = {
+      resume_text: payload.resume_text,
+      job_description: payload.job_description,
+      interview_type: payload.interview_type,
+      difficulty: payload.difficulty,
+      language: payload.language,
+    };
+
     const { data } = await api.post<StartInterviewResponse>(
-      "/api/interview/start",
-      payload
+      `/api/interview/start${params.size ? `?${params.toString()}` : ""}`,
+      body
     );
     return data;
   },

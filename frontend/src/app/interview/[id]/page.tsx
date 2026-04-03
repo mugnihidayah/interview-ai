@@ -37,6 +37,22 @@ interface Message {
   ttsCacheKey?: string;
 }
 
+interface SessionBootstrap {
+  session_id: string;
+  current_question: string;
+  question_number: number;
+  total_questions: number;
+  candidate_name: string;
+  interview_type: string;
+  difficulty: string;
+  language: string;
+  tts_cache_key?: string | null;
+}
+
+function interviewBootstrapKey(sessionId: string): string {
+  return `interview_bootstrap:${sessionId}`;
+}
+
 export default function InterviewSessionPage() {
   const params = useParams();
   const router = useRouter();
@@ -95,6 +111,24 @@ export default function InterviewSessionPage() {
 
   const submitting = isStreaming;
 
+  const applyBootstrap = useCallback((bootstrap: SessionBootstrap) => {
+    setQuestionNumber(bootstrap.question_number);
+    setTotalQuestions(bootstrap.total_questions);
+    setCandidateName(bootstrap.candidate_name || "");
+    setInterviewType(bootstrap.interview_type || "");
+    setDifficulty(bootstrap.difficulty || "");
+    setSessionLanguage(bootstrap.language || "en");
+    setStatus("interviewing");
+    setMessages([
+      {
+        id: `q-${bootstrap.question_number}`,
+        role: "ai",
+        content: bootstrap.current_question,
+        ttsCacheKey: bootstrap.tts_cache_key || undefined,
+      },
+    ]);
+  }, []);
+
   // Auto-save
   const autoSave = useAutoSave(sessionId, questionNumber);
 
@@ -123,7 +157,21 @@ export default function InterviewSessionPage() {
     setError(null);
     setReloadingSession(true);
 
+    let bootstrap: SessionBootstrap | null = null;
+
     try {
+      if (typeof window !== "undefined") {
+        const raw = window.sessionStorage.getItem(
+          interviewBootstrapKey(sessionId)
+        );
+        if (raw) {
+          bootstrap = JSON.parse(raw) as SessionBootstrap;
+          if (bootstrap.current_question) {
+            applyBootstrap(bootstrap);
+          }
+        }
+      }
+
       const voiceFromUrl =
         typeof window !== "undefined" &&
         new URLSearchParams(window.location.search).get("voice") === "1";
@@ -156,6 +204,10 @@ export default function InterviewSessionPage() {
           },
         ]);
 
+        if (typeof window !== "undefined") {
+          window.sessionStorage.removeItem(interviewBootstrapKey(sessionId));
+        }
+
         // Show voice prompt only if voice not enabled via URL
         setTimeout(() => {
           if (
@@ -167,6 +219,14 @@ export default function InterviewSessionPage() {
             setShowVoicePrompt(true);
           }
         }, 100);
+      } else if (
+        bootstrap?.current_question &&
+        session.question_number === bootstrap.question_number &&
+        session.status !== "completed"
+      ) {
+        applyBootstrap(bootstrap);
+      } else {
+        setError("Current question was not available. Please reload the session.");
       }
     } catch (err) {
       setError(getErrorMessage(err));
@@ -174,7 +234,7 @@ export default function InterviewSessionPage() {
       setInitialLoading(false);
       setReloadingSession(false);
     }
-  }, [sessionId, router]);
+  }, [applyBootstrap, sessionId, router]);
 
   useEffect(() => {
     loadSession();
@@ -333,6 +393,9 @@ export default function InterviewSessionPage() {
 
     lastProcessedPhaseRef.current = "";
     autoSave.clear();
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(interviewBootstrapKey(sessionId));
+    }
     submitStream(sessionId, trimmed, { prefetchTTS: voiceEnabled });
   }
 
