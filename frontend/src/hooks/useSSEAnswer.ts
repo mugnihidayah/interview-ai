@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import Cookies from "js-cookie";
-import { API_URL } from "@/lib/api";
+import { buildApiUrl } from "@/lib/api";
 import type { Evaluation, SubmitAnswerResponse } from "@/lib/api";
 
 export type SSEPhase =
@@ -76,20 +76,17 @@ export function useSSEAnswer() {
           headers["Authorization"] = `Bearer ${token}`;
         }
 
-        const response = await fetch(
-          `${API_URL}/api/interview/answer/stream`,
-          {
-            method: "POST",
-            headers,
-            credentials: "include",
-            body: JSON.stringify({
-              session_id: sessionId,
-              answer,
-              prefetch_tts: options.prefetchTTS ?? false,
-            }),
-            signal: abortRef.current.signal,
-          }
-        );
+        const response = await fetch(buildApiUrl("/api/interview/answer/stream"), {
+          method: "POST",
+          headers,
+          credentials: "include",
+          body: JSON.stringify({
+            session_id: sessionId,
+            answer,
+            prefetch_tts: options.prefetchTTS ?? false,
+          }),
+          signal: abortRef.current.signal,
+        });
 
         // Handle HTTP-level errors (auth, rate limit, ownership, etc.)
         if (!response.ok) {

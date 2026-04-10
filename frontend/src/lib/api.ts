@@ -1,7 +1,11 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
 import Cookies from "js-cookie";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export const API_URL = rawApiUrl.replace(/\/+$/, "");
+export const buildApiUrl = (path: string) =>
+  `${API_URL}/${path.replace(/^\/+/, "")}`;
 
 // Axios Instance
 const api = axios.create({
